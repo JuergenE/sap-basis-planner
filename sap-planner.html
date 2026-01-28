@@ -1,0 +1,2735 @@
+<!DOCTYPE html>
+<html lang="de">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SAP Basis Jahresplaner 2026</title>
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script crossorigin
+    src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    .weekend-pattern {
+      background: repeating-linear-gradient(45deg,
+          transparent,
+          transparent 3px,
+          rgba(156, 163, 175, 0.3) 3px,
+          rgba(156, 163, 175, 0.3) 6px);
+    }
+
+    .holiday-pattern {
+      background: repeating-linear-gradient(-45deg,
+          transparent,
+          transparent 3px,
+          rgba(239, 68, 68, 0.2) 3px,
+          rgba(239, 68, 68, 0.2) 6px);
+    }
+
+    .maintenance-pattern {
+      background: repeating-linear-gradient(45deg,
+          transparent,
+          transparent 3px,
+          rgba(139, 92, 246, 0.35) 3px,
+          rgba(139, 92, 246, 0.35) 6px);
+    }
+
+    .today-marker {
+      box-shadow: inset 0 0 0 2px #ef4444;
+    }
+
+    .activity-bar {
+      transition: transform 0.15s ease, box-shadow 0.15s ease;
+    }
+
+    .activity-bar:hover {
+      transform: scaleY(1.1);
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+      z-index: 10;
+    }
+
+    @media (max-width: 640px) {
+      .gantt-row-label {
+        min-width: 100px !important;
+        font-size: 0.75rem;
+      }
+
+      .header-controls {
+        flex-direction: column;
+        gap: 0.5rem;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useMemo, useCallback } = React;
+
+    // =========================================================================
+    // API CLIENT
+    // =========================================================================
+
+
+
+    class ApiClient {
+      constructor() {
+        // Token is managed via HttpOnly cookie
+
+        // Configuration: API Base URL
+        // Leave empty ('') if frontend and backend run on the same server (default).
+        // If running strictly as client (file:// or different server), set the full URL.
+
+        // BEFORE (local development):
+        // this.baseUrl = 'http://localhost:3232';
+
+        // AFTER (production):
+        // this.baseUrl = 'http://YOUR_SERVER_IP:3232';
+        // Example:
+        // this.baseUrl = 'http://192.168.1.100:3232';
+        // Or with hostname:
+        // this.baseUrl = 'http://sap-planner.yourcompany.local:3232';
+
+        this.baseUrl = '';
+      }
+
+      setToken(token) {
+        // No-op: Token is set by server via HttpOnly cookie
+      }
+
+      async request(endpoint, options = {}) {
+        const headers = { 'Content-Type': 'application/json', ...options.headers };
+        // Authorization header is no longer needed (cookie is sent automatically)
+
+        const response = await fetch(`${this.baseUrl}${endpoint}`, { ...options, headers });
+        const data = await response.json();
+
+        if (response.status === 401) {
+          // Only treat as session expired if we had a token and this isn't a login attempt
+          if (this.token && !endpoint.includes('/login')) {
+            this.setToken(null);
+            throw new Error('SESSION_EXPIRED');
+          }
+          // For login attempts, throw the actual error message
+          throw new Error(data.error || 'Ungültige Anmeldedaten');
+        }
+
+        if (!response.ok) {
+          throw new Error(data.error || 'API Fehler');
+        }
+        return data;
+      }
+
+      // Auth
+      async login(username, password) {
+        // Token is set as HttpOnly cookie by server
+        const data = await this.request('/api/auth/login', {
+          method: 'POST',
+          body: JSON.stringify({ username, password })
+        });
+        return data.user;
+      }
+
+      async logout() {
+        try { await this.request('/api/auth/logout', { method: 'POST' }); } catch { }
+        // Server clears cookie
+      }
+
+      async getMe() { return this.request('/api/auth/me'); }
+      async changePassword(currentPassword, newPassword) {
+        return this.request('/api/auth/change-password', {
+          method: 'POST',
+          body: JSON.stringify({ currentPassword, newPassword })
+        });
+      }
+
+      // Settings
+      async getSettings() { return this.request('/api/settings'); }
+      async updateSettings(settings) { return this.request('/api/settings', { method: 'PUT', body: JSON.stringify(settings) }); }
+
+      // Activity Types
+      async getActivityTypes() { return this.request('/api/activity-types'); }
+      async createActivityType(type) { return this.request('/api/activity-types', { method: 'POST', body: JSON.stringify(type) }); }
+      async updateActivityType(id, data) { return this.request(`/api/activity-types/${id}`, { method: 'PUT', body: JSON.stringify(data) }); }
+      async deleteActivityType(id) { return this.request(`/api/activity-types/${id}`, { method: 'DELETE' }); }
+
+      // Landscapes
+      async getLandscapes() { return this.request('/api/landscapes'); }
+      async createLandscape(name) { return this.request('/api/landscapes', { method: 'POST', body: JSON.stringify({ name }) }); }
+      async updateLandscape(id, name) { return this.request(`/api/landscapes/${id}`, { method: 'PUT', body: JSON.stringify({ name }) }); }
+      async deleteLandscape(id) { return this.request(`/api/landscapes/${id}`, { method: 'DELETE' }); }
+
+      // SIDs
+      async createSid(landscape_id, name, is_prd) { return this.request('/api/sids', { method: 'POST', body: JSON.stringify({ landscape_id, name, is_prd }) }); }
+      async updateSid(id, data) { return this.request(`/api/sids/${id}`, { method: 'PUT', body: JSON.stringify(data) }); }
+      async deleteSid(id) { return this.request(`/api/sids/${id}`, { method: 'DELETE' }); }
+
+      // Activities
+      async createActivity(data) { return this.request('/api/activities', { method: 'POST', body: JSON.stringify(data) }); }
+      async updateActivity(id, data) { return this.request(`/api/activities/${id}`, { method: 'PUT', body: JSON.stringify(data) }); }
+      async deleteActivity(id) { return this.request(`/api/activities/${id}`, { method: 'DELETE' }); }
+
+      // Sub-Activities
+      async createSubActivity(data) { return this.request('/api/sub-activities', { method: 'POST', body: JSON.stringify(data) }); }
+      async updateSubActivity(id, data) { return this.request(`/api/sub-activities/${id}`, { method: 'PUT', body: JSON.stringify(data) }); }
+      async deleteSubActivity(id) { return this.request(`/api/sub-activities/${id}`, { method: 'DELETE' }); }
+
+      // Users
+      async getUsers() { return this.request('/api/users'); }
+      async createUser(data) { return this.request('/api/users', { method: 'POST', body: JSON.stringify(data) }); }
+      async updateUser(id, data) { return this.request(`/api/users/${id}`, { method: 'PUT', body: JSON.stringify(data) }); }
+      async deleteUser(id) { return this.request(`/api/users/${id}`, { method: 'DELETE' }); }
+
+      // Import
+      async importJson(data) { return this.request('/api/import/json', { method: 'POST', body: JSON.stringify(data) }); }
+
+      // Logs
+      async getLogs(limit = 100) { return this.request(`/api/logs?limit=${limit}`); }
+
+      // Maintenance Sundays
+      async getMaintenanceSundays() { return this.request('/api/maintenance-sundays'); }
+      async updateMaintenanceSunday(id, date, label) {
+        return this.request(`/api/maintenance-sundays/${id}`, {
+          method: 'PUT',
+          body: JSON.stringify({ date, label })
+        });
+      }
+    }
+
+    const api = new ApiClient();
+
+    // =========================================================================
+    // CONSTANTS
+    // =========================================================================
+
+    const bundeslaender = [
+      { id: 'BW', name: 'Baden-Württemberg' },
+      { id: 'BY', name: 'Bayern' },
+      { id: 'BE', name: 'Berlin' },
+      { id: 'BB', name: 'Brandenburg' },
+      { id: 'HB', name: 'Bremen' },
+      { id: 'HH', name: 'Hamburg' },
+      { id: 'HE', name: 'Hessen' },
+      { id: 'MV', name: 'Mecklenburg-Vorpommern' },
+      { id: 'NI', name: 'Niedersachsen' },
+      { id: 'NW', name: 'Nordrhein-Westfalen' },
+      { id: 'RP', name: 'Rheinland-Pfalz' },
+      { id: 'SL', name: 'Saarland' },
+      { id: 'SN', name: 'Sachsen' },
+      { id: 'ST', name: 'Sachsen-Anhalt' },
+      { id: 'SH', name: 'Schleswig-Holstein' },
+      { id: 'TH', name: 'Thüringen' }
+    ];
+
+    const defaultActivityTypes = [
+      { id: 'installation', label: 'Installation', color: '#3b82f6' },
+      { id: 'update', label: 'Update/Upgrade', color: '#8b5cf6' },
+      { id: 'kernel', label: 'Kernel Update', color: '#06b6d4' },
+      { id: 'db', label: 'DB Update', color: '#10b981' },
+      { id: 'os', label: 'OS Patches', color: '#f59e0b' },
+      { id: 'stpi', label: 'ST-PI Patches', color: '#ef4444' },
+      { id: 'security', label: 'Security Patches', color: '#ec4899' },
+      { id: 'other', label: 'Sonstige', color: '#6b7280' }
+    ];
+
+    // Predefined colors for new activity types
+    const availableColors = [
+      '#3b82f6', '#8b5cf6', '#06b6d4', '#10b981', '#f59e0b',
+      '#ef4444', '#ec4899', '#6b7280', '#14b8a6', '#f97316',
+      '#84cc16', '#a855f7', '#0ea5e9', '#d946ef', '#22c55e'
+    ];
+
+    // Weekday letters: Monday to Sunday (ISO week starts Monday)
+    const weekDayLetters = ['M', 'D', 'M', 'D', 'F', 'S', 'S'];
+
+    const defaultData = {
+      year: 2026,
+      bundesland: 'BW',
+      landscapes: [
+        {
+          id: 1,
+          name: 'ERP Landschaft',
+          sids: [
+            { id: 1, name: 'RTT', isPRD: false, activities: [] },
+            { id: 2, name: 'RTI', isPRD: false, activities: [] },
+            { id: 3, name: 'DB3', isPRD: true, activities: [] }
+          ]
+        },
+        {
+          id: 2,
+          name: 'SAP Solution Manager Landschaft',
+          sids: [
+            { id: 4, name: 'SOT', isPRD: false, activities: [] },
+            { id: 5, name: 'SOQ', isPRD: false, activities: [] },
+            { id: 6, name: 'SOL', isPRD: true, activities: [] }
+          ]
+        }
+      ]
+    };
+
+    // =========================================================================
+    // UTILITY FUNCTIONS
+    // =========================================================================
+
+    // Calculate Easter using Gauss algorithm
+    const getEasterDate = (year) => {
+      const a = year % 19;
+      const b = Math.floor(year / 100);
+      const c = year % 100;
+      const d = Math.floor(b / 4);
+      const e = b % 4;
+      const f = Math.floor((b + 8) / 25);
+      const g = Math.floor((b - f + 1) / 3);
+      const h = (19 * a + b - d - g + 15) % 30;
+      const i = Math.floor(c / 4);
+      const k = c % 4;
+      const l = (32 + 2 * e + 2 * i - h - k) % 7;
+      const m = Math.floor((a + 11 * h + 22 * l) / 451);
+      const month = Math.floor((h + l - 7 * m + 114) / 31) - 1;
+      const day = ((h + l - 7 * m + 114) % 31) + 1;
+      return new Date(year, month, day);
+    };
+
+    // Get all German holidays for a year and federal state
+    const getGermanHolidays = (year, bundesland) => {
+      const holidays = new Map();
+      // Use local date formatting to avoid timezone issues with toISOString()
+      const addHoliday = (date, name) => {
+        const y = date.getFullYear();
+        const m = String(date.getMonth() + 1).padStart(2, '0');
+        const d = String(date.getDate()).padStart(2, '0');
+        holidays.set(`${y}-${m}-${d}`, name);
+      };
+
+      // Fixed holidays (nationwide)
+      addHoliday(new Date(year, 0, 1), 'Neujahr');
+      addHoliday(new Date(year, 4, 1), 'Tag der Arbeit');
+      addHoliday(new Date(year, 9, 3), 'Tag der Deutschen Einheit');
+      addHoliday(new Date(year, 11, 25), '1. Weihnachtstag');
+      addHoliday(new Date(year, 11, 26), '2. Weihnachtstag');
+
+      // Easter-based holidays
+      const easter = getEasterDate(year);
+
+      const karfreitag = new Date(easter);
+      karfreitag.setDate(easter.getDate() - 2);
+      addHoliday(karfreitag, 'Karfreitag');
+
+      const ostermontag = new Date(easter);
+      ostermontag.setDate(easter.getDate() + 1);
+      addHoliday(ostermontag, 'Ostermontag');
+
+      const christiHimmelfahrt = new Date(easter);
+      christiHimmelfahrt.setDate(easter.getDate() + 39);
+      addHoliday(christiHimmelfahrt, 'Christi Himmelfahrt');
+
+      const pfingstmontag = new Date(easter);
+      pfingstmontag.setDate(easter.getDate() + 50);
+      addHoliday(pfingstmontag, 'Pfingstmontag');
+
+      // State-specific holidays
+      if (['BW', 'BY', 'ST'].includes(bundesland)) {
+        addHoliday(new Date(year, 0, 6), 'Heilige Drei Könige');
+      }
+
+      if (['BW', 'BY', 'HE', 'NW', 'RP', 'SL'].includes(bundesland)) {
+        const fronleichnam = new Date(easter);
+        fronleichnam.setDate(easter.getDate() + 60);
+        addHoliday(fronleichnam, 'Fronleichnam');
+      }
+
+      if (['BY', 'SL'].includes(bundesland)) {
+        addHoliday(new Date(year, 7, 15), 'Mariä Himmelfahrt');
+      }
+
+      if (['BB', 'MV', 'SN', 'ST', 'TH'].includes(bundesland)) {
+        addHoliday(new Date(year, 9, 31), 'Reformationstag');
+      }
+
+      if (['BW', 'BY', 'NW', 'RP', 'SL'].includes(bundesland)) {
+        addHoliday(new Date(year, 10, 1), 'Allerheiligen');
+      }
+
+      if (bundesland === 'SN') {
+        // Buß- und Bettag: Wednesday before Nov 23
+        const nov23 = new Date(year, 10, 23);
+        const dayOfWeek = nov23.getDay();
+        const daysToWednesday = (dayOfWeek + 4) % 7;
+        const bussUndBettag = new Date(nov23);
+        bussUndBettag.setDate(nov23.getDate() - daysToWednesday);
+        addHoliday(bussUndBettag, 'Buß- und Bettag');
+      }
+
+      return holidays;
+    };
+
+    // Check if a date is a weekend (Saturday=6, Sunday=0)
+    const isWeekend = (date) => {
+      const day = date.getDay();
+      return day === 0 || day === 6;
+    };
+
+    // Get weekday index (0=Monday, 6=Sunday) from JavaScript Date
+    const getWeekdayIndex = (date) => {
+      const day = date.getDay();
+      return day === 0 ? 6 : day - 1; // Convert: Sun=0 -> 6, Mon=1 -> 0, etc.
+    };
+
+    // Calculate ISO week number
+    const getISOWeekNumber = (date) => {
+      const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+      const dayNum = d.getUTCDay() || 7;
+      d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+      const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+      return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+    };
+
+    // Get Monday of the week containing a date
+    const getMondayOfWeek = (date) => {
+      const d = new Date(date);
+      const day = d.getDay();
+      const diff = d.getDate() - day + (day === 0 ? -6 : 1);
+      d.setDate(diff);
+      return d;
+    };
+
+    // Calculate end date based on working days
+    // Duration = 1 means start date = end date (start day is the first working day)
+    // For PRD systems: weekends (Sat/Sun) ARE working days (work happens on weekends)
+    // For non-PRD systems: weekends are NOT working days
+    const calculateEndDate = (startDateStr, durationDays, year, bundesland, isPRD = false) => {
+      const holidays = getGermanHolidays(year, bundesland);
+      const holidayDates = new Set(holidays.keys());
+
+      let current = new Date(startDateStr);
+      let workingDaysCount = 0;
+
+      while (workingDaysCount < durationDays) {
+        const dateStr = formatDateISO(current);
+        const dayOfWeek = current.getDay();
+
+        let isWorkingDay;
+        if (isPRD) {
+          // PRD systems: weekends ARE working days, only holidays are excluded
+          isWorkingDay = !holidayDates.has(dateStr);
+        } else {
+          // Non-PRD systems: weekends and holidays are NOT working days
+          isWorkingDay = dayOfWeek !== 0 && dayOfWeek !== 6 && !holidayDates.has(dateStr);
+        }
+
+        if (isWorkingDay) {
+          workingDaysCount++;
+          if (workingDaysCount >= durationDays) {
+            break;
+          }
+        }
+
+        current.setDate(current.getDate() + 1);
+      }
+
+      return formatDateISO(current);
+    };
+
+    // Adjust start date for PRD systems (move to Saturday)
+    const adjustStartDateForPRD = (startDateStr, isPRD) => {
+      if (!isPRD) return startDateStr;
+
+      const date = new Date(startDateStr);
+      const day = date.getDay();
+
+      if (day !== 6) {
+        const daysUntilSaturday = (6 - day + 7) % 7 || 7;
+        date.setDate(date.getDate() + daysUntilSaturday);
+      }
+
+      return date.toISOString().split('T')[0];
+    };
+
+    // Format date as German locale
+    const formatDateDE = (dateStr) => {
+      if (!dateStr) return '';
+      const date = new Date(dateStr);
+      return date.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' });
+    };
+
+    // Format date for comparison (YYYY-MM-DD)
+    const formatDateISO = (date) => {
+      const year = date.getFullYear();
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      const day = String(date.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    };
+
+    // Calculate activity segments (split at weekends/holidays for non-PRD systems)
+    const getActivitySegments = (startDateStr, endDateStr, isPRD, holidays) => {
+      const segments = [];
+      const holidayDates = new Set(holidays.keys());
+
+      const start = new Date(startDateStr);
+      const end = new Date(endDateStr);
+
+      // For PRD systems, return single continuous segment
+      if (isPRD) {
+        return [{ start: startDateStr, end: endDateStr }];
+      }
+
+      // For non-PRD systems, split at weekends and holidays
+      let currentSegmentStart = null;
+      let currentDate = new Date(start);
+
+      while (currentDate <= end) {
+        const dateStr = formatDateISO(currentDate);
+        const dayOfWeek = currentDate.getDay();
+        const isNonWorkingDay = dayOfWeek === 0 || dayOfWeek === 6 || holidayDates.has(dateStr);
+
+        if (!isNonWorkingDay) {
+          // Working day
+          if (currentSegmentStart === null) {
+            currentSegmentStart = dateStr;
+          }
+        } else {
+          // Non-working day - close current segment if open
+          if (currentSegmentStart !== null) {
+            const prevDate = new Date(currentDate);
+            prevDate.setDate(prevDate.getDate() - 1);
+            segments.push({
+              start: currentSegmentStart,
+              end: formatDateISO(prevDate)
+            });
+            currentSegmentStart = null;
+          }
+        }
+
+        currentDate.setDate(currentDate.getDate() + 1);
+      }
+
+      // Close final segment
+      if (currentSegmentStart !== null) {
+        segments.push({
+          start: currentSegmentStart,
+          end: formatDateISO(end)
+        });
+      }
+
+      return segments;
+    };
+
+    // =========================================================================
+    // ICONS
+    // =========================================================================
+
+    const CalendarIcon = () => (
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+        <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
+        <line x1="16" y1="2" x2="16" y2="6"></line>
+        <line x1="8" y1="2" x2="8" y2="6"></line>
+        <line x1="3" y1="10" x2="21" y2="10"></line>
+      </svg>
+    );
+
+    const PlusIcon = () => (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+        <line x1="12" y1="5" x2="12" y2="19"></line>
+        <line x1="5" y1="12" x2="19" y2="12"></line>
+      </svg>
+    );
+
+    const SaveIcon = () => (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+        <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
+        <polyline points="17 21 17 13 7 13 7 21"></polyline>
+        <polyline points="7 3 7 8 15 8"></polyline>
+      </svg>
+    );
+
+    const DownloadIcon = () => (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+        <polyline points="7 10 12 15 17 10"></polyline>
+        <line x1="12" y1="15" x2="12" y2="3"></line>
+      </svg>
+    );
+
+    const TrashIcon = () => (
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+        <polyline points="3 6 5 6 21 6"></polyline>
+        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+      </svg>
+    );
+
+    const ChevronLeftIcon = () => (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+        <polyline points="15 18 9 12 15 6"></polyline>
+      </svg>
+    );
+
+    const ChevronRightIcon = () => (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+        <polyline points="9 18 15 12 9 6"></polyline>
+      </svg>
+    );
+
+    const UploadIcon = () => (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+        <polyline points="17 8 12 3 7 8"></polyline>
+        <line x1="12" y1="3" x2="12" y2="15"></line>
+      </svg>
+    );
+
+    // =========================================================================
+    // MAIN APPLICATION
+    // =========================================================================
+
+    const SAPBasisPlanner = () => {
+      // Auth state
+      const [user, setUser] = useState(null);
+      const [loginError, setLoginError] = useState('');
+      const [loading, setLoading] = useState(true);
+
+      // App state
+      const [year, setYear] = useState(2026);
+      const [bundesland, setBundesland] = useState('BW');
+      const [landscapes, setLandscapes] = useState([]);
+      // View state
+      const [viewMode, setViewMode] = useState('week');
+      const [selectedQuarter, setSelectedQuarter] = useState(1);
+      const [viewOffset, setViewOffset] = useState(60); // Start at Today (offset 60)
+      const [collapsedLandscapes, setCollapsedLandscapes] = useState(new Set());
+      const [collapsedActivities, setCollapsedActivities] = useState(new Set());
+      const [editingSidInfo, setEditingSidInfo] = useState(null); // { landscapeId, sidId, notes }
+      const [activityTypes, setActivityTypes] = useState(defaultActivityTypes);
+      const [editingTypeId, setEditingTypeId] = useState(null);
+
+      // Check if user can edit (admin role)
+      const canEdit = user?.role === 'admin';
+
+      // Load data from API
+      const loadData = useCallback(async () => {
+        try {
+          const [settings, types, lands, sundays] = await Promise.all([
+            api.getSettings(),
+            api.getActivityTypes(),
+            api.getLandscapes(),
+            api.getMaintenanceSundays().catch(() => [])
+          ]);
+
+          if (settings.year) setYear(parseInt(settings.year));
+          if (settings.bundesland) setBundesland(settings.bundesland);
+          if (types.length > 0) setActivityTypes(types);
+
+          // Calculate endDate for all activities and sub-activities on load
+          const loadedYear = settings.year ? parseInt(settings.year) : new Date().getFullYear();
+          const loadedBundesland = settings.bundesland || 'BW';
+          const landsWithEndDates = lands.map(landscape => ({
+            ...landscape,
+            sids: landscape.sids.map(sid => ({
+              ...sid,
+              activities: sid.activities.map(activity => ({
+                ...activity,
+                endDate: calculateEndDate(
+                  activity.startDate,
+                  parseInt(activity.duration) || 1,
+                  loadedYear,
+                  loadedBundesland,
+                  activity.includesWeekend || false
+                ),
+                subActivities: (activity.subActivities || []).map(sub => ({
+                  ...sub,
+                  endDate: calculateEndDate(
+                    sub.startDate,
+                    parseInt(sub.duration) || 1,
+                    loadedYear,
+                    loadedBundesland,
+                    sub.includesWeekend || false
+                  )
+                }))
+              }))
+            }))
+          }));
+          setLandscapes(landsWithEndDates);
+          setMaintenanceSundays(sundays);
+        } catch (error) {
+          if (error.message === 'SESSION_EXPIRED') {
+            setUser(null);
+          } else {
+            console.error('Error loading data:', error);
+          }
+        }
+      }, []);
+
+      // Check authentication on mount
+      useEffect(() => {
+        const checkAuth = async () => {
+          if (api.token) {
+            try {
+              const userData = await api.getMe();
+              setUser(userData);
+              await loadData();
+            } catch {
+              api.setToken(null);
+            }
+          }
+          setLoading(false);
+        };
+        checkAuth();
+      }, [loadData]);
+
+
+
+      // Login handler
+      const handleLogin = async (e) => {
+        e.preventDefault();
+        const form = e.target;
+        const username = form.username.value;
+        const password = form.password.value;
+
+        try {
+          setLoginError('');
+          const userData = await api.login(username, password);
+          setUser(userData);
+          await loadData();
+        } catch (error) {
+          setLoginError(error.message);
+        }
+      };
+
+      // Logout handler
+      const handleLogout = async () => {
+        await api.logout();
+        setUser(null);
+        setLandscapes([]);
+      };
+
+      // Password change dialog state
+      const [showPasswordDialog, setShowPasswordDialog] = useState(false);
+      const [passwordError, setPasswordError] = useState('');
+      const [passwordSuccess, setPasswordSuccess] = useState('');
+
+      // Password change handler
+      const handlePasswordChange = async (e) => {
+        e.preventDefault();
+        const form = e.target;
+        const currentPassword = form.currentPassword.value;
+        const newPassword = form.newPassword.value;
+        const confirmPassword = form.confirmPassword.value;
+
+        setPasswordError('');
+        setPasswordSuccess('');
+
+        if (newPassword !== confirmPassword) {
+          setPasswordError('Die neuen Passwörter stimmen nicht überein');
+          return;
+        }
+
+        try {
+          await api.changePassword(currentPassword, newPassword);
+          setPasswordSuccess('Passwort erfolgreich geändert!');
+          form.reset();
+          setTimeout(() => {
+            setShowPasswordDialog(false);
+            setPasswordSuccess('');
+          }, 2000);
+        } catch (error) {
+          setPasswordError(error.message);
+        }
+      };
+
+      // User management state
+      const [showUserDialog, setShowUserDialog] = useState(false);
+      const [users, setUsers] = useState([]);
+      const [userError, setUserError] = useState('');
+      const [editingUser, setEditingUser] = useState(null);
+
+      // Load users
+      const loadUsers = async () => {
+        try {
+          const userList = await api.getUsers();
+          setUsers(userList);
+        } catch (error) {
+          setUserError(error.message);
+        }
+      };
+
+      // Open user dialog
+      const openUserDialog = async () => {
+        setShowUserDialog(true);
+        setUserError('');
+        setEditingUser(null);
+        await loadUsers();
+      };
+
+      // Add new user
+      const handleAddUser = async (e) => {
+        e.preventDefault();
+        const form = e.target;
+        const username = form.newUsername.value.trim();
+        const password = form.newPassword.value;
+        const role = form.newRole.value;
+
+        if (!username || !password) {
+          setUserError('Benutzername und Passwort erforderlich');
+          return;
+        }
+
+        try {
+          setUserError('');
+          await api.createUser({ username, password, role });
+          form.reset();
+          await loadUsers();
+        } catch (error) {
+          setUserError(error.message);
+        }
+      };
+
+      // Delete user
+      const handleDeleteUser = async (userId, username) => {
+        if (userId === user.id) {
+          setUserError('Sie können sich nicht selbst löschen');
+          return;
+        }
+        if (confirm(`Benutzer "${username}" wirklich löschen?`)) {
+          try {
+            await api.deleteUser(userId);
+            await loadUsers();
+          } catch (error) {
+            setUserError(error.message);
+          }
+        }
+      };
+
+      // Reset user password
+      const handleResetPassword = async (userId) => {
+        const newPassword = prompt('Neues Passwort eingeben (mind. 6 Zeichen):');
+        if (newPassword && newPassword.length >= 6) {
+          try {
+            await api.updateUser(userId, { password: newPassword });
+            alert('Passwort wurde zurückgesetzt');
+          } catch (error) {
+            setUserError(error.message);
+          }
+        } else if (newPassword) {
+          alert('Passwort muss mindestens 6 Zeichen haben');
+        }
+      };
+
+      // =========================================
+      // LOGS MANAGEMENT
+      // =========================================
+      const [showLogsDialog, setShowLogsDialog] = useState(false);
+      const [logs, setLogs] = useState('');
+      const [logsLoading, setLogsLoading] = useState(false);
+
+      const openLogsDialog = async () => {
+        setShowLogsDialog(true);
+        setLogsLoading(true);
+        try {
+          const logData = await api.getLogs();
+          setLogs(logData.logs || '');
+        } catch (error) {
+          console.error('Error loading logs:', error);
+        }
+        setLogsLoading(false);
+      };
+
+      // =========================================
+      // MAINTENANCE SUNDAYS MANAGEMENT
+      // =========================================
+      const [showMaintenanceDialog, setShowMaintenanceDialog] = useState(false);
+      const [maintenanceSundays, setMaintenanceSundays] = useState([]);
+      const [maintenanceLoading, setMaintenanceLoading] = useState(false);
+
+      // Load maintenance sundays with other data
+      const loadMaintenanceSundays = async () => {
+        try {
+          const sundays = await api.getMaintenanceSundays();
+          setMaintenanceSundays(sundays);
+        } catch (error) {
+          console.error('Error loading maintenance sundays:', error);
+        }
+      };
+
+      const openMaintenanceDialog = async () => {
+        setShowMaintenanceDialog(true);
+        setMaintenanceLoading(true);
+        await loadMaintenanceSundays();
+        setMaintenanceLoading(false);
+      };
+
+      const handleMaintenanceSundayUpdate = async (id, date) => {
+        try {
+          const existing = maintenanceSundays.find(s => s.id === id);
+          await api.updateMaintenanceSunday(id, date, existing?.label || `Wartungssonntag ${['I', 'II', 'III', 'IV'][id - 1]}`);
+          await loadMaintenanceSundays();
+        } catch (error) {
+          alert('Fehler beim Speichern: ' + error.message);
+        }
+      };
+
+      // Toggle collapse state for a single landscape
+      const toggleLandscapeCollapse = (landscapeId) => {
+        setCollapsedLandscapes(prev => {
+          const newSet = new Set(prev);
+          if (newSet.has(landscapeId)) {
+            newSet.delete(landscapeId);
+          } else {
+            newSet.add(landscapeId);
+          }
+          return newSet;
+        });
+      };
+
+      // Collapse all landscapes
+      const collapseAllLandscapes = () => {
+        setCollapsedLandscapes(new Set(landscapes.map(l => l.id)));
+      };
+
+      // Expand all landscapes
+      const expandAllLandscapes = () => {
+        setCollapsedLandscapes(new Set());
+      };
+
+      // Add new activity type
+      const addActivityType = async () => {
+        if (!canEdit) return;
+        const newId = `custom_${Date.now()}`;
+        const usedColors = activityTypes.map(t => t.color);
+        const availableColor = availableColors.find(c => !usedColors.includes(c)) || '#6b7280';
+        try {
+          const newType = await api.createActivityType({ id: newId, label: 'Neue Aktivität', color: availableColor });
+          setActivityTypes([...activityTypes, newType]);
+          setEditingTypeId(newId);
+        } catch (error) {
+          alert('Fehler: ' + error.message);
+        }
+      };
+
+      // Rename activity type
+      const renameActivityType = async (typeId, newLabel) => {
+        if (!canEdit) return;
+        try {
+          await api.updateActivityType(typeId, { label: newLabel });
+          setActivityTypes(activityTypes.map(t => t.id === typeId ? { ...t, label: newLabel } : t));
+        } catch (error) {
+          alert('Fehler: ' + error.message);
+        }
+      };
+
+      // Delete activity type
+      const deleteActivityType = async (typeId) => {
+        if (!canEdit) return;
+        if (activityTypes.length <= 1) {
+          alert('Es muss mindestens ein Aktivitätstyp vorhanden sein.');
+          return;
+        }
+        if (confirm('Aktivitätstyp wirklich löschen?')) {
+          try {
+            await api.deleteActivityType(typeId);
+            setActivityTypes(activityTypes.filter(t => t.id !== typeId));
+          } catch (error) {
+            alert('Fehler: ' + error.message);
+          }
+        }
+      };
+
+      // Memoized holidays
+      const holidays = useMemo(() => getGermanHolidays(year, bundesland), [year, bundesland]);
+
+      // Get today's date string using proper ISO format
+      const todayDate = new Date();
+      const today = formatDateISO(todayDate);
+      const currentYear = todayDate.getFullYear();
+
+      // =========================================================================
+      // DATA MANAGEMENT (API-based)
+      // =========================================================================
+
+      const saveSettings = async () => {
+        if (!canEdit) return;
+        try {
+          await api.updateSettings({ year, bundesland });
+          alert('Einstellungen gespeichert!');
+        } catch (error) {
+          alert('Fehler: ' + error.message);
+        }
+      };
+
+      const addLandscape = async () => {
+        if (!canEdit) return;
+        try {
+          const newLandscape = await api.createLandscape(`Neue Landschaft ${landscapes.length + 1}`);
+          setLandscapes([...landscapes, newLandscape]);
+        } catch (error) {
+          alert('Fehler: ' + error.message);
+        }
+      };
+
+      const deleteLandscape = async (landscapeId) => {
+        if (!canEdit) return;
+        if (confirm('Systemlandschaft wirklich löschen?')) {
+          try {
+            await api.deleteLandscape(landscapeId);
+            setLandscapes(landscapes.filter(l => l.id !== landscapeId));
+          } catch (error) {
+            alert('Fehler: ' + error.message);
+          }
+        }
+      };
+
+      const updateLandscapeName = async (landscapeId, name) => {
+        if (!canEdit) return;
+        try {
+          await api.updateLandscape(landscapeId, name);
+          setLandscapes(landscapes.map(l => l.id === landscapeId ? { ...l, name } : l));
+        } catch (error) {
+          alert('Fehler: ' + error.message);
+        }
+      };
+
+      const addSID = async (landscapeId) => {
+        if (!canEdit) return;
+        try {
+          const newSid = await api.createSid(landscapeId, '', false);
+          setLandscapes(landscapes.map(l =>
+            l.id === landscapeId ? { ...l, sids: [...l.sids, newSid] } : l
+          ));
+        } catch (error) {
+          alert('Fehler: ' + error.message);
+        }
+      };
+
+      const deleteSID = async (landscapeId, sidId) => {
+        if (!canEdit) return;
+        if (confirm('SID wirklich löschen?')) {
+          try {
+            await api.deleteSid(sidId);
+            setLandscapes(landscapes.map(l =>
+              l.id === landscapeId ? { ...l, sids: l.sids.filter(s => s.id !== sidId) } : l
+            ));
+          } catch (error) {
+            alert('Fehler: ' + error.message);
+          }
+        }
+      };
+
+      const updateSID = async (landscapeId, sidId, field, value) => {
+        if (!canEdit) return;
+        const apiField = field === 'isPRD' ? 'is_prd' : field;
+        try {
+          await api.updateSid(sidId, { [apiField]: value });
+          setLandscapes(landscapes.map(l =>
+            l.id === landscapeId ? {
+              ...l,
+              sids: l.sids.map(s => s.id !== sidId ? s : { ...s, [field]: value })
+            } : l
+          ));
+        } catch (error) {
+          alert('Fehler: ' + error.message);
+        }
+      };
+
+      const addActivity = async (landscapeId, sidId) => {
+        if (!canEdit) return;
+        const startDate = new Date().toISOString().split('T')[0];
+        try {
+          const newActivity = await api.createActivity({
+            sid_id: sidId,
+            type_id: 'installation',
+            start_date: startDate,
+            duration: 1,
+            includes_weekend: false
+          });
+          newActivity.endDate = calculateEndDate(startDate, 1, year, bundesland, false);
+
+          setLandscapes(landscapes.map(l =>
+            l.id === landscapeId ? {
+              ...l,
+              sids: l.sids.map(s =>
+                s.id === sidId ? { ...s, activities: [...s.activities, newActivity] } : s
+              )
+            } : l
+          ));
+        } catch (error) {
+          alert('Fehler: ' + error.message);
+        }
+      };
+
+      const deleteActivity = async (landscapeId, sidId, activityId) => {
+        if (!canEdit) return;
+        try {
+          await api.deleteActivity(activityId);
+          setLandscapes(landscapes.map(l =>
+            l.id === landscapeId ? {
+              ...l,
+              sids: l.sids.map(s =>
+                s.id === sidId ? { ...s, activities: s.activities.filter(a => a.id !== activityId) } : s
+              )
+            } : l
+          ));
+        } catch (error) {
+          alert('Fehler: ' + error.message);
+        }
+      };
+
+      const updateActivity = async (landscapeId, sidId, activityId, field, value) => {
+        if (!canEdit) return;
+        const apiFieldMap = { type: 'type_id', startDate: 'start_date', includesWeekend: 'includes_weekend' };
+        const apiField = apiFieldMap[field] || field;
+
+        try {
+          await api.updateActivity(activityId, { [apiField]: value });
+
+          setLandscapes(landscapes.map(l =>
+            l.id === landscapeId ? {
+              ...l,
+              sids: l.sids.map(s =>
+                s.id === sidId ? {
+                  ...s,
+                  activities: s.activities.map(a => {
+                    if (a.id === activityId) {
+                      const updated = { ...a, [field]: value };
+                      if (field === 'startDate' || field === 'duration' || field === 'includesWeekend') {
+                        const startDateVal = field === 'startDate' ? value : a.startDate;
+                        const durationVal = field === 'duration' ? parseInt(value) || 1 : parseInt(a.duration) || 1;
+                        const includesWE = field === 'includesWeekend' ? value : (a.includesWeekend || false);
+                        updated.endDate = calculateEndDate(startDateVal, durationVal, year, bundesland, includesWE);
+                        updated.duration = durationVal;
+                      }
+                      return updated;
+                    }
+                    return a;
+                  })
+                } : s
+              )
+            } : l
+          ));
+        } catch (error) {
+          alert('Fehler: ' + error.message);
+        }
+      };
+
+      // =========================================================================
+      // SUB-ACTIVITY FUNCTIONS
+      // =========================================================================
+
+      const toggleActivityCollapse = (activityId) => {
+        setCollapsedActivities(prev => {
+          const newSet = new Set(prev);
+          if (newSet.has(activityId)) {
+            newSet.delete(activityId);
+          } else {
+            newSet.add(activityId);
+          }
+          return newSet;
+        });
+      };
+
+      const addSubActivity = async (landscapeId, sidId, activityId) => {
+        if (!canEdit) return;
+        try {
+          // Find the parent activity to get its start date as default
+          const landscape = landscapes.find(l => l.id === landscapeId);
+          const sid = landscape?.sids.find(s => s.id === sidId);
+          const activity = sid?.activities.find(a => a.id === activityId);
+
+          const startDate = activity?.startDate || formatDateISO(new Date());
+
+          const newSubActivity = await api.createSubActivity({
+            activity_id: activityId,
+            name: 'Sub-Aktivität',
+            start_date: startDate,
+            duration: 1,
+            includes_weekend: false
+          });
+          newSubActivity.endDate = calculateEndDate(startDate, 1, year, bundesland, false);
+
+          setLandscapes(landscapes.map(l =>
+            l.id === landscapeId ? {
+              ...l,
+              sids: l.sids.map(s =>
+                s.id === sidId ? {
+                  ...s,
+                  activities: s.activities.map(a =>
+                    a.id === activityId ? {
+                      ...a,
+                      subActivities: [...(a.subActivities || []), newSubActivity]
+                    } : a
+                  )
+                } : s
+              )
+            } : l
+          ));
+        } catch (error) {
+          alert('Fehler: ' + error.message);
+        }
+      };
+
+      const updateSubActivity = async (landscapeId, sidId, activityId, subActivityId, field, value) => {
+        if (!canEdit) return;
+        const apiFieldMap = { name: 'name', startDate: 'start_date', includesWeekend: 'includes_weekend' };
+        const apiField = apiFieldMap[field] || field;
+
+        try {
+          await api.updateSubActivity(subActivityId, { [apiField]: value });
+
+          setLandscapes(landscapes.map(l =>
+            l.id === landscapeId ? {
+              ...l,
+              sids: l.sids.map(s =>
+                s.id === sidId ? {
+                  ...s,
+                  activities: s.activities.map(a =>
+                    a.id === activityId ? {
+                      ...a,
+                      subActivities: (a.subActivities || []).map(sub => {
+                        if (sub.id === subActivityId) {
+                          const updated = { ...sub, [field]: value };
+                          if (field === 'startDate' || field === 'duration' || field === 'includesWeekend') {
+                            const startDateVal = field === 'startDate' ? value : sub.startDate;
+                            const durationVal = field === 'duration' ? parseInt(value) || 1 : parseInt(sub.duration) || 1;
+                            const includesWE = field === 'includesWeekend' ? value : (sub.includesWeekend || false);
+                            updated.endDate = calculateEndDate(startDateVal, durationVal, year, bundesland, includesWE);
+                            updated.duration = durationVal;
+                          }
+                          return updated;
+                        }
+                        return sub;
+                      })
+                    } : a
+                  )
+                } : s
+              )
+            } : l
+          ));
+        } catch (error) {
+          alert('Fehler: ' + error.message);
+        }
+      };
+
+      const deleteSubActivity = async (landscapeId, sidId, activityId, subActivityId) => {
+        if (!canEdit) return;
+        try {
+          await api.deleteSubActivity(subActivityId);
+          setLandscapes(landscapes.map(l =>
+            l.id === landscapeId ? {
+              ...l,
+              sids: l.sids.map(s =>
+                s.id === sidId ? {
+                  ...s,
+                  activities: s.activities.map(a =>
+                    a.id === activityId ? {
+                      ...a,
+                      subActivities: (a.subActivities || []).filter(sub => sub.id !== subActivityId)
+                    } : a
+                  )
+                } : s
+              )
+            } : l
+          ));
+        } catch (error) {
+          alert('Fehler: ' + error.message);
+        }
+      };
+
+      // =========================================================================
+      // EXPORT/IMPORT FUNCTIONS  
+      // =========================================================================
+
+      const exportJSON = () => {
+        try {
+          const dataObj = { year, bundesland, landscapes, activityTypes };
+          const dataStr = JSON.stringify(dataObj, null, 2);
+          const blob = new Blob([dataStr], { type: 'application/json;charset=utf-8' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `sap-basis-planung-${year}.json`;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          setTimeout(() => URL.revokeObjectURL(url), 100);
+        } catch (err) {
+          alert('Fehler beim Export: ' + err.message);
+        }
+      };
+
+      const exportCSV = () => {
+        try {
+          const BOM = '\ufeff';
+          const exportDate = new Date().toLocaleString('de-DE', { dateStyle: 'medium', timeStyle: 'short' });
+          const titleLine = `SAP-Basis-Planung-${year} (Export vom ${exportDate})`;
+          const lines = [titleLine, 'Systemlandschaft;SID;PRD;Aktivitaetstyp;Sub-Aktivitaet;Startdatum;Dauer (Arbeitstage);Enddatum'];
+
+          landscapes.forEach(landscape => {
+            landscape.sids.forEach(sid => {
+              if (sid.activities.length === 0) {
+                lines.push(`${landscape.name};${sid.name};${sid.isPRD ? 'Ja' : 'Nein'};;;;;`);
+              } else {
+                sid.activities.forEach(activity => {
+                  const actType = activityTypes.find(t => t.id === activity.type);
+                  const actLabel = actType?.label || activity.type;
+
+                  // Check if activity has sub-activities
+                  if (activity.subActivities && activity.subActivities.length > 0) {
+                    // Export each sub-activity as a separate row
+                    activity.subActivities.forEach(subActivity => {
+                      lines.push(`${landscape.name};${sid.name};${sid.isPRD ? 'Ja' : 'Nein'};${actLabel};${subActivity.name};${formatDateDE(subActivity.startDate)};${subActivity.duration};${formatDateDE(subActivity.endDate)}`);
+                    });
+                  } else {
+                    // Export activity without sub-activities
+                    lines.push(`${landscape.name};${sid.name};${sid.isPRD ? 'Ja' : 'Nein'};${actLabel};;${formatDateDE(activity.startDate)};${activity.duration};${formatDateDE(activity.endDate)}`);
+                  }
+                });
+              }
+            });
+          });
+
+          const csvContent = BOM + lines.join('\r\n');
+          const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `SAP-Basis-Planung-${year}.csv`;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          setTimeout(() => URL.revokeObjectURL(url), 100);
+        } catch (err) {
+          alert('Fehler beim CSV Export: ' + err.message);
+        }
+      };
+
+      const importJSON = async (event) => {
+        if (!canEdit) return;
+        const file = event.target.files?.[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = async (e) => {
+          try {
+            const text = e.target?.result;
+            if (typeof text !== 'string') {
+              throw new Error('Datei konnte nicht gelesen werden');
+            }
+            const data = JSON.parse(text);
+
+            // Import via API
+            await api.importJson(data);
+
+            // Reload data from server
+            await loadData();
+
+            alert('Daten erfolgreich importiert!');
+          } catch (err) {
+            alert('Fehler beim Importieren: ' + err.message);
+          }
+        };
+        reader.onerror = () => {
+          alert('Fehler beim Lesen der Datei');
+        };
+        reader.readAsText(file, 'UTF-8');
+        // Reset input so same file can be imported again
+        event.target.value = '';
+      };
+
+      // =========================================================================
+      // GANTT CHART RENDERING
+      // =========================================================================
+
+      const renderGanttChart = () => {
+        const yearStart = new Date(year, 0, 1);
+        const yearEnd = new Date(year, 11, 31);
+        const totalDaysInYear = Math.ceil((yearEnd - yearStart) / (1000 * 60 * 60 * 24)) + 1;
+
+        let allDays = [];
+        let visibleDays = [];
+        let headerCells = [];
+        let dayWidth = 0;
+
+
+        // Determine the base date range based on view mode
+        let rangeStart, rangeEnd;
+        let todayOffset = 0; // Offset to show today on the left side
+
+        if (viewMode === 'year') {
+          rangeStart = yearStart;
+          rangeEnd = yearEnd;
+        } else if (viewMode === 'week') {
+          // Week view: 360 days total, starting 60 days before today
+          const todayDate = new Date();
+          rangeStart = new Date(todayDate);
+          rangeStart.setDate(rangeStart.getDate() - 60);
+          rangeEnd = new Date(rangeStart);
+          rangeEnd.setDate(rangeEnd.getDate() + 359); // 360 days total
+          // Calculate offset to show today at the left
+          todayOffset = 60; // Today is 60 days from the start
+        } else {
+          // Quarter view: show selected quarter
+          rangeStart = new Date(year, (selectedQuarter - 1) * 3, 1);
+          rangeEnd = new Date(year, selectedQuarter * 3, 0);
+        }
+
+        // Calculate all days in the range
+        const rangeDays = Math.ceil((rangeEnd - rangeStart) / (1000 * 60 * 60 * 24)) + 1;
+        for (let i = 0; i < rangeDays; i++) {
+          const date = new Date(rangeStart);
+          date.setDate(date.getDate() + i);
+          allDays.push(date);
+        }
+
+        // Apply offset for navigation (slider/buttons)
+        // For week/quarter view: show a window of days that slides across the range
+        const daysToShow = 60; // Number of days visible at once
+        const maxOffset = Math.max(0, allDays.length - daysToShow);
+        const effectiveOffset = Math.min(viewOffset, maxOffset);
+        const visibleCount = viewMode === 'year' ? allDays.length : Math.min(daysToShow, allDays.length - effectiveOffset);
+
+        visibleDays = allDays.slice(effectiveOffset, effectiveOffset + visibleCount);
+        dayWidth = 100 / visibleDays.length;
+
+        // Build header cells based on view mode
+        if (viewMode === 'year') {
+          // Month headers for year view
+          for (let m = 0; m < 12; m++) {
+            const monthStart = new Date(year, m, 1);
+            const monthEnd = new Date(year, m + 1, 0);
+
+            // Find indices in visibleDays
+            const startIdx = visibleDays.findIndex(d => formatDateISO(d) === formatDateISO(monthStart));
+            const endIdx = visibleDays.findIndex(d => formatDateISO(d) === formatDateISO(monthEnd));
+
+            if (startIdx >= 0 && endIdx >= 0) {
+              const width = ((endIdx - startIdx + 1) / visibleDays.length) * 100;
+              headerCells.push({
+                label: monthStart.toLocaleDateString('de-DE', { month: 'short' }),
+                width,
+                startDay: startIdx
+              });
+            }
+          }
+        } else if (viewMode === 'quarter') {
+          // Week headers for quarter view
+          let weekProcessed = new Set();
+          visibleDays.forEach((date, idx) => {
+            const weekNum = getISOWeekNumber(date);
+            const weekdayIdx = getWeekdayIndex(date);
+
+            if (weekdayIdx === 0 || idx === 0) { // Monday or first day
+              if (!weekProcessed.has(weekNum)) {
+                weekProcessed.add(weekNum);
+                // Count how many days in this week are visible
+                let weekDayCount = 0;
+                for (let i = idx; i < visibleDays.length && weekDayCount < 7; i++) {
+                  if (getISOWeekNumber(visibleDays[i]) === weekNum) {
+                    weekDayCount++;
+                  } else {
+                    break;
+                  }
+                }
+                const width = (weekDayCount / visibleDays.length) * 100;
+                headerCells.push({
+                  label: `KW ${weekNum}`,
+                  width,
+                  startDay: idx
+                });
+              }
+            }
+          });
+        } else if (viewMode === 'week') {
+          // Individual day headers with weekday letters and day numbers
+          let currentWeek = -1;
+          visibleDays.forEach((date, idx) => {
+            const weekNum = getISOWeekNumber(date);
+            const weekdayIdx = getWeekdayIndex(date); // 0=Mon, 6=Sun
+            const dayLetter = weekDayLetters[weekdayIdx];
+            const dayNumber = date.getDate(); // Day of month (1-31)
+            const isNewWeek = weekNum !== currentWeek;
+
+            headerCells.push({
+              label: dayLetter,
+              dayNumber: dayNumber,
+              weekNum: weekNum,
+              width: dayWidth,
+              startDay: idx,
+              isNewWeek: isNewWeek,
+              monthName: date.toLocaleDateString('de-DE', { month: 'long' }) // Add month name
+            });
+
+            currentWeek = weekNum;
+          });
+        }
+
+        // Use maxOffset for slider (already calculated above)
+        const sliderMax = maxOffset;
+
+        return (
+          <div className="bg-white rounded-lg shadow-lg p-4 mb-6 overflow-hidden">
+            <h2 className="text-xl font-bold mb-4">Gantt-Chart {year}</h2>
+
+            {/* Navigation Controls */}
+            <div className="flex items-center gap-2 mb-4 flex-wrap w-1/2">
+              <button
+                onClick={() => setViewOffset(Math.max(0, viewOffset - 7))}
+                className="flex items-center gap-1 px-3 py-1 bg-gray-200 rounded hover:bg-gray-300 text-sm"
+                title="7 Tage zurück"
+              >
+                <ChevronLeftIcon /> Woche
+              </button>
+              <button
+                onClick={() => setViewOffset(Math.max(0, viewOffset - 1))}
+                className="flex items-center gap-1 px-3 py-1 bg-gray-200 rounded hover:bg-gray-300 text-sm"
+                title="1 Tag zurück"
+              >
+                <ChevronLeftIcon /> Tag
+              </button>
+
+              <input
+                type="range"
+                min="0"
+                max={sliderMax}
+                value={Math.min(viewOffset, sliderMax)}
+                onChange={(e) => setViewOffset(parseInt(e.target.value))}
+                className="flex-1 min-w-32"
+                title={`Tag ${viewOffset + 1}`}
+              />
+
+              <button
+                onClick={() => setViewOffset(Math.min(sliderMax, viewOffset + 1))}
+                className="flex items-center gap-1 px-3 py-1 bg-gray-200 rounded hover:bg-gray-300 text-sm"
+                title="1 Tag vor"
+              >
+                Tag <ChevronRightIcon />
+              </button>
+              <button
+                onClick={() => setViewOffset(Math.min(sliderMax, viewOffset + 7))}
+                className="flex items-center gap-1 px-3 py-1 bg-gray-200 rounded hover:bg-gray-300 text-sm"
+                title="7 Tage vor"
+              >
+                Woche <ChevronRightIcon />
+              </button>
+
+              <button
+                onClick={() => setViewOffset(todayOffset)}
+                className="px-3 py-1 bg-blue-100 text-blue-700 rounded hover:bg-blue-200 text-sm"
+                title="Heute anzeigen"
+              >
+                Heute
+              </button>
+            </div>
+
+            <div className="min-w-max">
+              {/* Header Row */}
+              <div className="flex border-b-2 border-gray-300 mb-2">
+                <div className="gantt-row-label min-w-48 font-semibold p-2 bg-gray-50">
+                  Systemlandschaft / SID
+                </div>
+                <div className="flex-1 flex relative">
+                  {viewMode === 'week' ? (
+                    // Week view: three rows - KW on top, weekday letters middle, day numbers bottom
+                    <div className="flex flex-col w-full">
+                      {/* Row 1: Week numbers (KW) */}
+                      <div className="flex w-full">
+                        {(() => {
+                          // Group days by week number
+                          const weekGroups = [];
+                          let currentWeekNum = null;
+                          let weekStartIdx = 0;
+                          headerCells.forEach((cell, idx) => {
+                            if (cell.weekNum !== currentWeekNum) {
+                              if (currentWeekNum !== null) {
+                                weekGroups.push({
+                                  weekNum: currentWeekNum,
+                                  count: idx - weekStartIdx,
+                                  monthName: headerCells[weekStartIdx].monthName
+                                });
+                              }
+                              currentWeekNum = cell.weekNum;
+                              weekStartIdx = idx;
+                            }
+                          });
+                          if (currentWeekNum !== null) {
+                            weekGroups.push({
+                              weekNum: currentWeekNum,
+                              count: headerCells.length - weekStartIdx,
+                              monthName: headerCells[weekStartIdx].monthName // Capture month
+                            });
+                          }
+                          return weekGroups.map((wg, idx) => {
+                            // Check if month changes (or is first)
+                            const prevWg = idx > 0 ? weekGroups[idx - 1] : null;
+                            const showMonth = idx === 0 || wg.monthName !== prevWg?.monthName;
+
+                            return (
+                              <div
+                                key={idx}
+                                className="text-center text-[10px] text-blue-600 font-medium border-l border-blue-400 relative"
+                                style={{ flex: wg.count, minWidth: `${wg.count * 20}px` }}
+                              >
+                                {showMonth && (
+                                  <div className="absolute left-0 bottom-full mb-0.5 whitespace-nowrap z-10">
+                                    <span className="border-l-2 border-red-500 pl-1 font-bold text-gray-800 text-xs">
+                                      {wg.monthName}
+                                    </span>
+                                  </div>
+                                )}
+                                KW{wg.weekNum}
+                              </div>
+                            );
+                          });
+                        })()}
+                      </div>
+                      {/* Row 2: Weekday letters */}
+                      <div className="flex w-full">
+                        {headerCells.map((cell, idx) => (
+                          <div
+                            key={idx}
+                            className={`text-center text-xs font-medium border-l border-gray-200 flex-1 ${cell.isNewWeek ? 'border-l border-blue-400' : ''}`}
+                            style={{ minWidth: '20px' }}
+                          >
+                            {cell.label}
+                          </div>
+                        ))}
+                      </div>
+                      {/* Row 3: Day numbers */}
+                      <div className="flex w-full">
+                        {headerCells.map((cell, idx) => (
+                          <div
+                            key={idx}
+                            className={`text-center text-[10px] text-gray-500 border-l border-gray-200 flex-1 ${cell.isNewWeek ? 'border-l border-blue-400' : ''}`}
+                            style={{ minWidth: '20px' }}
+                          >
+                            {cell.dayNumber}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : (
+                    // Year/Quarter view
+                    headerCells.map((cell, idx) => (
+                      <div
+                        key={idx}
+                        className="text-center text-sm font-medium border-l border-gray-200 px-1 py-2"
+                        style={{ width: `${cell.width}%` }}
+                      >
+                        {cell.label}
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+
+              {/* Gantt Rows */}
+              {landscapes.map(landscape => (
+                <div key={landscape.id} className="mb-4">
+                  <div className="font-semibold text-lg mb-1 text-blue-700 px-2">
+                    {landscape.name}
+                  </div>
+                  {landscape.sids.map(sid => (
+                    <div key={sid.id} className="flex items-stretch hover:bg-gray-50">
+                      <div className="gantt-row-label min-w-48 pl-4 text-sm flex items-center gap-1 py-1 border-b border-gray-100">
+                        <span className={sid.isPRD ? 'font-bold text-red-600' : ''}>
+                          {sid.name || 'Neue SID'}
+                        </span>
+                        {sid.isPRD && <span className="text-xs bg-red-100 text-red-700 px-1 rounded">PRD</span>}
+                      </div>
+                      <div className="flex-1 relative h-10 border-l border-gray-200 border-b border-gray-100">
+                        {/* Day cells with weekend/holiday indicators */}
+                        <div className="absolute inset-0 flex">
+                          {visibleDays.map((date, idx) => {
+                            const dateStr = formatDateISO(date);
+                            const isWE = isWeekend(date);
+                            const isHoliday = holidays.has(dateStr);
+                            const isMaintenanceSunday = maintenanceSundays.some(s => s.date === dateStr);
+                            const isToday = dateStr === today && year === currentYear;
+
+                            return (
+                              <div
+                                key={idx}
+                                className={`
+                                  h-full border-r border-gray-100
+                                  ${isWE ? 'weekend-pattern' : ''}
+                                  ${isHoliday ? 'holiday-pattern' : ''}
+                                  ${isMaintenanceSunday ? 'maintenance-pattern' : ''}
+                                  ${isToday ? 'today-marker' : ''}
+                                `}
+                                style={{ width: `${dayWidth}%`, minWidth: viewMode === 'week' ? '20px' : '0' }}
+                                title={`${date.toLocaleDateString('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit' })}${isHoliday ? ' - ' + holidays.get(dateStr) : ''}${isMaintenanceSunday ? ' - Wartungssonntag' : ''}`}
+                              />
+                            );
+                          })}
+                        </div>
+
+                        {/* Activity bars - split at weekends for activities without WE flag */}
+                        {sid.activities.map(activity => {
+                          const actType = activityTypes.find(t => t.id === activity.type);
+
+                          // Skip Update/Upgrade activities that have sub-activities (they will be rendered separately)
+                          if (activity.type === 'update' && (activity.subActivities || []).length > 0) {
+                            return null;
+                          }
+
+                          // Calculate endDate if not present (from startDate + duration)
+                          const endDate = activity.endDate || calculateEndDate(
+                            activity.startDate,
+                            activity.duration || 1,
+                            year,
+                            bundesland,
+                            activity.includesWeekend || false
+                          );
+
+                          // Get segments (split at weekends/holidays if not including weekends)
+                          const segments = getActivitySegments(
+                            activity.startDate,
+                            endDate,
+                            activity.includesWeekend || false,
+                            holidays
+                          );
+
+                          // Calculate position relative to visible days
+                          const viewStartDate = visibleDays[0];
+                          const viewEndDate = visibleDays[visibleDays.length - 1];
+                          const msPerDay = 1000 * 60 * 60 * 24;
+                          const viewStartMs = viewStartDate.getTime();
+
+                          return segments.map((segment, segIdx) => {
+                            const segStartStr = segment.start;
+                            const segEndStr = segment.end;
+
+                            // Find index of start and end dates in visibleDays array
+                            const startIdx = visibleDays.findIndex(d => formatDateISO(d) === segStartStr);
+                            const endIdx = visibleDays.findIndex(d => formatDateISO(d) === segEndStr);
+
+                            // Skip if segment is outside visible range
+                            if (endIdx < 0 && startIdx < 0) return null;
+
+                            // Calculate effective indices (clamp to visible range)
+                            const effectiveStartIdx = startIdx >= 0 ? startIdx : 0;
+                            const effectiveEndIdx = endIdx >= 0 ? endIdx : visibleDays.length - 1;
+
+                            // Skip if start is after visible range or end is before it
+                            if (startIdx >= 0 && startIdx >= visibleDays.length) return null;
+                            if (endIdx >= 0 && endIdx < 0) return null;
+
+                            const leftPct = (effectiveStartIdx / visibleDays.length) * 100;
+                            const widthPct = ((effectiveEndIdx - effectiveStartIdx + 1) / visibleDays.length) * 100;
+
+                            if (widthPct <= 0) return null;
+
+                            const isFirstSegment = segIdx === 0;
+
+                            return (
+                              <div
+                                key={`${activity.id}-${segIdx}`}
+                                className="activity-bar absolute h-6 rounded text-xs text-white flex items-center justify-center cursor-pointer overflow-hidden"
+                                style={{
+                                  left: `${leftPct}%`,
+                                  width: `${Math.max(widthPct, 0.5)}%`,
+                                  backgroundColor: actType?.color,
+                                  top: '8px',
+                                  minWidth: '8px'
+                                }}
+                                title={`${actType?.label}: ${formatDateDE(activity.startDate)} - ${formatDateDE(activity.endDate)} (${activity.duration} Arbeitstage)${segments.length > 1 ? ` [Teil ${segIdx + 1}/${segments.length}]` : ''}`}
+                              >
+                                {isFirstSegment && <span className="truncate px-1">{actType?.label.substring(0, 6)}</span>}
+                              </div>
+                            );
+                          });
+                        })}
+
+                        {/* Sub-Activity bars for Update/Upgrade activities */}
+                        {sid.activities.filter(a => a.type === 'update' && (a.subActivities || []).length > 0).flatMap(activity => {
+                          const actType = activityTypes.find(t => t.id === activity.type);
+                          return (activity.subActivities || []).flatMap((subActivity, subIdx) => {
+                            const subEndDate = subActivity.endDate || calculateEndDate(
+                              subActivity.startDate,
+                              subActivity.duration || 1,
+                              year,
+                              bundesland,
+                              subActivity.includesWeekend || false
+                            );
+
+                            const subSegments = getActivitySegments(
+                              subActivity.startDate,
+                              subEndDate,
+                              subActivity.includesWeekend || false,
+                              holidays
+                            );
+
+                            return subSegments.map((segment, segIdx) => {
+                              const segStartStr = segment.start;
+                              const segEndStr = segment.end;
+
+                              // Find index of start and end dates in visibleDays array
+                              const startIdx = visibleDays.findIndex(d => formatDateISO(d) === segStartStr);
+                              const endIdx = visibleDays.findIndex(d => formatDateISO(d) === segEndStr);
+
+                              // Skip if segment is outside visible range
+                              if (endIdx < 0 && startIdx < 0) return null;
+
+                              // Calculate effective indices (clamp to visible range)
+                              const effectiveStartIdx = startIdx >= 0 ? startIdx : 0;
+                              const effectiveEndIdx = endIdx >= 0 ? endIdx : visibleDays.length - 1;
+
+                              const leftPct = (effectiveStartIdx / visibleDays.length) * 100;
+                              const widthPct = ((effectiveEndIdx - effectiveStartIdx + 1) / visibleDays.length) * 100;
+
+                              if (widthPct <= 0) return null;
+
+                              return (
+                                <div
+                                  key={`sub-${subActivity.id}-${segIdx}`}
+                                  className="activity-bar absolute h-6 rounded text-xs text-white flex items-center justify-center cursor-pointer overflow-hidden"
+                                  style={{
+                                    left: `${leftPct}%`,
+                                    width: `${Math.max(widthPct, 0.5)}%`,
+                                    backgroundColor: actType?.color,
+                                    top: '8px',
+                                    minWidth: '8px'
+                                  }}
+                                  title={`${subActivity.name}: ${formatDateDE(subActivity.startDate)} - ${formatDateDE(subActivity.endDate)} (${subActivity.duration} AT)`}
+                                >
+                                  <span className="truncate px-1">{subActivity.name.substring(0, 6)}</span>
+                                </div>
+                              );
+                            });
+                          });
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      };
+
+      // =========================================================================
+      // RENDER
+      // =========================================================================
+
+      // Loading state
+      if (loading) {
+        return (
+          <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 flex items-center justify-center">
+            <div className="text-xl text-gray-600">Lade...</div>
+          </div>
+        );
+      }
+
+      // Login form
+      if (!user) {
+        return (
+          <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 flex items-center justify-center p-4">
+            <div className="bg-white rounded-lg shadow-lg p-8 w-full max-w-md">
+              <div className="flex items-center gap-3 mb-6">
+                <CalendarIcon />
+                <h1 className="text-2xl font-bold text-gray-800">SAP Basis Jahresplaner</h1>
+              </div>
+
+              <form onSubmit={handleLogin}>
+                <div className="mb-4">
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Benutzername</label>
+                  <input
+                    type="text"
+                    name="username"
+                    required
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    placeholder="Benutzername"
+                  />
+                </div>
+
+                <div className="mb-6">
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Passwort</label>
+                  <input
+                    type="password"
+                    name="password"
+                    required
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    placeholder="Passwort"
+                  />
+                </div>
+
+                {loginError && (
+                  <div className="mb-4 p-3 bg-red-100 text-red-700 rounded-lg text-sm">
+                    {loginError}
+                  </div>
+                )}
+
+                <button
+                  type="submit"
+                  className="w-full py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium"
+                >
+                  Anmelden
+                </button>
+              </form>
+            </div>
+          </div>
+        );
+      }
+
+      // Main application
+      return (
+        <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 p-4 md:p-6">
+          <div className="max-w-7xl mx-auto">
+            {/* Header */}
+            <div className="bg-white rounded-lg shadow-lg p-4 md:p-6 mb-6">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-4">
+                <div className="flex items-center gap-3">
+                  <CalendarIcon />
+                  <h1 className="text-2xl md:text-3xl font-bold text-gray-800">SAP Basis Jahresplaner</h1>
+                </div>
+                <div className="flex gap-2 flex-wrap header-controls items-center">
+                  <span className="text-sm text-gray-600">
+                    {user.username} ({user.role === 'admin' ? 'Administrator' : 'Benutzer'})
+                  </span>
+                  <button onClick={() => setShowPasswordDialog(true)} className="px-3 py-1 text-sm text-gray-600 hover:text-gray-800 border border-gray-300 rounded">
+                    🔑 Passwort
+                  </button>
+                  {canEdit && (
+                    <button onClick={openUserDialog} className="px-3 py-1 text-sm text-gray-600 hover:text-gray-800 border border-gray-300 rounded">
+                      👥 Benutzer
+                    </button>
+                  )}
+                  <button onClick={handleLogout} className="px-3 py-1 text-sm text-gray-600 hover:text-gray-800 border border-gray-300 rounded">
+                    Abmelden
+                  </button>
+                  {canEdit && (
+                    <button onClick={saveSettings} className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm">
+                      <SaveIcon /> Einstellungen speichern
+                    </button>
+                  )}
+                  <button onClick={exportCSV} className="flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 text-sm">
+                    <DownloadIcon /> CSV Export
+                  </button>
+                  <button onClick={exportJSON} className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm">
+                    <DownloadIcon /> JSON Export
+                  </button>
+                  {canEdit && (
+                    <label className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 cursor-pointer text-sm">
+                      <UploadIcon /> JSON Import
+                      <input type="file" accept=".json,application/json" onChange={importJSON} className="hidden" />
+                    </label>
+                  )}
+                  {canEdit && (
+                    <button onClick={openLogsDialog} className="flex items-center gap-2 px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 text-sm">
+                      📋 Logfiles
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Settings */}
+              <div className="flex gap-4 items-end flex-wrap">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Jahr</label>
+                  <input
+                    type="number"
+                    value={year}
+                    onChange={(e) => setYear(parseInt(e.target.value))}
+                    disabled={!canEdit}
+                    className={`px-4 py-2 border border-gray-300 rounded-lg w-24 ${!canEdit ? 'bg-gray-100' : ''}`}
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Bundesland</label>
+                  <select
+                    value={bundesland}
+                    onChange={(e) => setBundesland(e.target.value)}
+                    disabled={!canEdit}
+                    className={`px-4 py-2 border border-gray-300 rounded-lg ${!canEdit ? 'bg-gray-100' : ''}`}
+                  >
+                    {bundeslaender.map(bl => (
+                      <option key={bl.id} value={bl.id}>{bl.name}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Ansicht</label>
+                  <select
+                    value={viewMode}
+                    onChange={(e) => { setViewMode(e.target.value); setViewOffset(0); }}
+                    className="px-4 py-2 border border-gray-300 rounded-lg"
+                  >
+                    <option value="year">Jahresansicht</option>
+                    <option value="quarter">Quartalsansicht</option>
+                    <option value="week">Kalenderwoche</option>
+                  </select>
+                </div>
+
+                {(viewMode === 'quarter' || viewMode === 'week') && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Quartal</label>
+                    <select
+                      value={selectedQuarter}
+                      onChange={(e) => { setSelectedQuarter(parseInt(e.target.value)); setViewOffset(0); }}
+                      className="px-4 py-2 border border-gray-300 rounded-lg"
+                    >
+                      <option value={1}>Q1 (Jan-Mär)</option>
+                      <option value={2}>Q2 (Apr-Jun)</option>
+                      <option value={3}>Q3 (Jul-Sep)</option>
+                      <option value={4}>Q4 (Okt-Dez)</option>
+                    </select>
+                  </div>
+                )}
+
+                {/* Wartungssonntag Selector */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Wartungssonntag</label>
+                  <div className="flex gap-2">
+                    <select
+                      className="px-4 py-2 border border-gray-300 rounded-lg bg-purple-50"
+                      defaultValue=""
+                    >
+                      <option value="" disabled>Auswählen...</option>
+                      {maintenanceSundays.filter(s => s.date).map(s => (
+                        <option key={s.id} value={s.id}>
+                          {['I', 'II', 'III', 'IV'][s.id - 1]} - {s.date}
+                        </option>
+                      ))}
+                    </select>
+                    {canEdit && (
+                      <button
+                        onClick={openMaintenanceDialog}
+                        className="px-3 py-2 text-purple-700 border border-purple-300 rounded-lg hover:bg-purple-50 text-sm"
+                        title="Wartungssonntage bearbeiten"
+                      >
+                        ⚙️
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Legend */}
+            <div className="bg-white rounded-lg shadow-lg p-4 mb-6">
+              <div className="flex items-center gap-3 mb-2">
+                <h3 className="font-semibold">Aktivitätstypen:</h3>
+                {canEdit && (
+                  <button
+                    onClick={addActivityType}
+                    className="text-sm px-2 py-1 border border-gray-300 rounded hover:bg-gray-100"
+                  >
+                    + Aktivität hinzufügen
+                  </button>
+                )}
+              </div>
+              <div className="flex flex-wrap gap-3">
+                {activityTypes.map(type => (
+                  <div key={type.id} className="flex items-center gap-2 group">
+                    <div className="w-4 h-4 rounded" style={{ backgroundColor: type.color }}></div>
+                    {canEdit && editingTypeId === type.id ? (
+                      <input
+                        type="text"
+                        value={type.label}
+                        onChange={(e) => renameActivityType(type.id, e.target.value)}
+                        onBlur={() => setEditingTypeId(null)}
+                        onKeyDown={(e) => e.key === 'Enter' && setEditingTypeId(null)}
+                        className="text-sm px-1 border border-blue-400 rounded w-32"
+                        autoFocus
+                      />
+                    ) : (
+                      <span
+                        className={`text-sm ${canEdit ? 'cursor-pointer hover:text-blue-600' : ''}`}
+                        onClick={() => canEdit && setEditingTypeId(type.id)}
+                        title={canEdit ? 'Klicken zum Umbenennen' : ''}
+                      >
+                        {type.label}
+                      </span>
+                    )}
+                    {canEdit && (
+                      <button
+                        onClick={() => deleteActivityType(type.id)}
+                        className="opacity-0 group-hover:opacity-100 text-red-500 hover:text-red-700 text-xs"
+                        title="Löschen"
+                      >
+                        ×
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+              <div className="flex flex-wrap gap-4 mt-3 pt-3 border-t border-gray-200">
+                <div className="flex items-center gap-2">
+                  <div className="w-4 h-4 weekend-pattern border border-gray-300"></div>
+                  <span className="text-sm">Wochenende</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="w-4 h-4 holiday-pattern border border-gray-300"></div>
+                  <span className="text-sm">Feiertag</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="w-4 h-4 today-marker border border-gray-300"></div>
+                  <span className="text-sm">Heute ({formatDateDE(today)})</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="w-4 h-4 maintenance-pattern border border-purple-400"></div>
+                  <span className="text-sm">Wartungssonntag</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Gantt Chart */}
+            {renderGanttChart()}
+
+            {/* Data Entry Section */}
+            <div className="bg-white rounded-lg shadow-lg p-4 md:p-6">
+              <div className="flex justify-between items-center mb-4 flex-wrap gap-2">
+                <div className="flex items-center gap-4">
+                  <h2 className="text-xl font-bold">Systemlandschaften & SIDs</h2>
+                  <button
+                    onClick={expandAllLandscapes}
+                    className="px-3 py-1 border border-gray-300 rounded hover:bg-gray-100 text-sm"
+                  >
+                    + Alle Aufklappen
+                  </button>
+                  <button
+                    onClick={collapseAllLandscapes}
+                    className="px-3 py-1 border border-gray-300 rounded hover:bg-gray-100 text-sm"
+                  >
+                    - Alle Zuklappen
+                  </button>
+                </div>
+                {canEdit && (
+                  <button
+                    onClick={addLandscape}
+                    className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                  >
+                    <PlusIcon /> Landschaft hinzufügen
+                  </button>
+                )}
+              </div>
+
+              {landscapes.map(landscape => (
+                <div key={landscape.id} className="mb-6 border border-gray-200 rounded-lg p-4">
+                  <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+                    <div className="flex items-center gap-3">
+                      <input
+                        type="text"
+                        value={landscape.name}
+                        onChange={(e) => updateLandscapeName(landscape.id, e.target.value)}
+                        disabled={!canEdit}
+                        maxLength={35}
+                        className={`text-lg font-semibold px-2 py-1 border-b-2 border-blue-600 bg-transparent ${!canEdit ? 'cursor-default' : ''}`}
+                      />
+                      <button
+                        onClick={() => toggleLandscapeCollapse(landscape.id)}
+                        className="px-3 py-1 border border-purple-300 text-purple-700 rounded hover:bg-purple-50 text-sm"
+                      >
+                        {collapsedLandscapes.has(landscape.id) ? '+ Aufklappen' : '- Zuklappen'}
+                      </button>
+                    </div>
+                    {canEdit && (
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => addSID(landscape.id)}
+                          className="flex items-center gap-2 px-3 py-1 bg-green-600 text-white rounded hover:bg-green-700 text-sm"
+                        >
+                          <PlusIcon /> SID hinzufügen
+                        </button>
+                        <button
+                          onClick={() => deleteLandscape(landscape.id)}
+                          className="flex items-center justify-center w-8 h-8 bg-red-100 text-red-700 rounded hover:bg-red-200"
+                          title="Landschaft löschen"
+                        >
+                          <TrashIcon />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  {!collapsedLandscapes.has(landscape.id) && landscape.sids.map(sid => (
+                    <div key={sid.id} className="ml-0 md:ml-4 mb-4 border-l-4 border-blue-300 pl-4">
+                      <div className="flex items-center gap-3 mb-2 flex-wrap">
+                        <input
+                          type="text"
+                          value={sid.name}
+                          placeholder="SID Name"
+                          onChange={(e) => updateSID(landscape.id, sid.id, 'name', e.target.value)}
+                          disabled={!canEdit}
+                          className={`px-2 py-1 border border-gray-300 rounded font-medium w-24 ${!canEdit ? 'bg-gray-100' : ''}`}
+                        />
+                        <label className="flex items-center gap-2 text-sm">
+                          <input
+                            type="checkbox"
+                            checked={sid.isPRD || false}
+                            onChange={(e) => updateSID(landscape.id, sid.id, 'isPRD', e.target.checked)}
+                            disabled={!canEdit}
+                            className="w-4 h-4"
+                          />
+                          <span className={sid.isPRD ? 'text-red-600 font-bold' : ''}>PRD System</span>
+                        </label>
+                        {canEdit && (
+                          <>
+                            <button
+                              onClick={() => addActivity(landscape.id, sid.id)}
+                              className="flex items-center gap-1 px-2 py-1 bg-purple-600 text-white rounded hover:bg-purple-700 text-sm"
+                            >
+                              <PlusIcon /> Aktivität
+                            </button>
+                            <button
+                              onClick={() => setEditingSidInfo({ landscapeId: landscape.id, sidId: sid.id, notes: sid.notes || '' })}
+                              className="flex items-center gap-1 px-2 py-1 bg-blue-100 text-blue-700 border border-blue-300 rounded hover:bg-blue-200 text-sm"
+                              title="SID-Informationen bearbeiten"
+                            >
+                              SID Info
+                            </button>
+                            <div className="flex-grow" />
+                            <button
+                              onClick={() => deleteSID(landscape.id, sid.id)}
+                              className="flex items-center justify-center w-8 h-8 bg-red-100 text-red-700 rounded hover:bg-red-200"
+                              title="SID löschen"
+                            >
+                              <TrashIcon />
+                            </button>
+                          </>
+                        )}
+                      </div>
+
+                      {sid.activities.map(activity => {
+                        const actType = activityTypes.find(t => t.id === activity.type);
+                        // Calculate values from sub-activities for Update/Upgrade type
+                        const hasSubActivities = activity.type === 'update' && (activity.subActivities || []).length > 0;
+                        const totalSubDuration = hasSubActivities
+                          ? (activity.subActivities || []).reduce((sum, sub) => sum + (parseInt(sub.duration) || 1), 0)
+                          : (parseInt(activity.duration) || 1);
+
+                        // Calculate start date (earliest sub-activity) and end date (latest sub-activity) when sub-activities exist
+                        let displayStartDate = activity.startDate;
+                        let displayEndDate = activity.endDate;
+                        if (hasSubActivities) {
+                          const subDates = activity.subActivities.map(sub => sub.startDate).filter(d => d).sort();
+                          const subEndDates = activity.subActivities.map(sub => sub.endDate).filter(d => d).sort();
+                          if (subDates.length > 0) displayStartDate = subDates[0];
+                          if (subEndDates.length > 0) displayEndDate = subEndDates[subEndDates.length - 1];
+                        }
+
+                        return (
+                          <div key={activity.id} className="ml-0 md:ml-4 mb-2 p-3 bg-gray-50 rounded">
+                            <div className="flex flex-wrap gap-2 items-center">
+                              <div
+                                className="w-3 h-3 rounded-full"
+                                style={{ backgroundColor: actType?.color }}
+                              />
+                              <select
+                                value={activity.type}
+                                onChange={(e) => updateActivity(landscape.id, sid.id, activity.id, 'type', e.target.value)}
+                                disabled={!canEdit}
+                                className={`px-2 py-1 border border-gray-300 rounded text-sm ${!canEdit ? 'bg-gray-100' : ''}`}
+                              >
+                                {activityTypes.map(type => (
+                                  <option key={type.id} value={type.id}>{type.label}</option>
+                                ))}
+                              </select>
+                              <div className="flex items-center gap-1">
+                                <span className="text-sm text-gray-600">Start:</span>
+                                {hasSubActivities ? (
+                                  <span
+                                    className="px-2 py-1 bg-purple-100 text-purple-700 border border-purple-300 rounded text-sm"
+                                    title="Frühestes Sub-Aktivität Startdatum"
+                                  >
+                                    {formatDateDE(displayStartDate)}
+                                  </span>
+                                ) : (
+                                  <input
+                                    type="date"
+                                    value={activity.startDate}
+                                    onChange={(e) => updateActivity(landscape.id, sid.id, activity.id, 'startDate', e.target.value)}
+                                    disabled={!canEdit}
+                                    className={`px-2 py-1 border border-gray-300 rounded text-sm ${!canEdit ? 'bg-gray-100' : ''}`}
+                                  />
+                                )}
+                              </div>
+                              <div className="flex items-center gap-1">
+                                <span className="text-sm text-gray-600">Dauer:</span>
+                                {hasSubActivities ? (
+                                  <span
+                                    className="px-2 py-1 bg-purple-100 text-purple-700 border border-purple-300 rounded text-sm font-medium"
+                                    title="Summe der Sub-Aktivitäten"
+                                  >
+                                    Σ {totalSubDuration}
+                                  </span>
+                                ) : (
+                                  <input
+                                    type="number"
+                                    value={activity.duration}
+                                    onChange={(e) => updateActivity(landscape.id, sid.id, activity.id, 'duration', e.target.value)}
+                                    placeholder="Tage"
+                                    min="1"
+                                    disabled={!canEdit}
+                                    className={`px-2 py-1 border border-gray-300 rounded w-16 text-sm ${!canEdit ? 'bg-gray-100' : ''}`}
+                                  />
+                                )}
+                                <span className="text-sm text-gray-600">AT</span>
+                              </div>
+                              <div className="text-sm text-gray-600">
+                                Ende: {hasSubActivities ? (
+                                  <span
+                                    className="px-2 py-1 bg-purple-100 text-purple-700 border border-purple-300 rounded font-medium"
+                                    title="Spätestes Sub-Aktivität Enddatum"
+                                  >
+                                    {formatDateDE(displayEndDate)}
+                                  </span>
+                                ) : (
+                                  <span className="font-medium">{formatDateDE(activity.endDate)}</span>
+                                )}
+                              </div>
+                              <label className="flex items-center gap-1 text-sm ml-4">
+                                <input
+                                  type="checkbox"
+                                  checked={activity.includesWeekend || false}
+                                  onChange={(e) => updateActivity(landscape.id, sid.id, activity.id, 'includesWeekend', e.target.checked)}
+                                  disabled={!canEdit}
+                                  className="w-4 h-4"
+                                />
+                                <span className="font-medium">WE</span>
+                              </label>
+                              {canEdit && (
+                                <button
+                                  onClick={() => deleteActivity(landscape.id, sid.id, activity.id)}
+                                  className="ml-auto flex items-center justify-center w-8 h-8 bg-red-100 text-red-700 rounded hover:bg-red-200"
+                                  title="Aktivität löschen"
+                                >
+                                  <TrashIcon />
+                                </button>
+                              )}
+                            </div>
+
+                            {/* Sub-Activities Header for Update/Upgrade type */}
+                            {activity.type === 'update' && canEdit && (
+                              <div className="flex items-center gap-2 mt-2 ml-4">
+                                {(activity.subActivities || []).length > 0 && (
+                                  <button
+                                    onClick={() => toggleActivityCollapse(activity.id)}
+                                    className="text-xs px-2 py-0.5 border border-gray-300 rounded hover:bg-gray-100"
+                                  >
+                                    {collapsedActivities.has(activity.id) ? '+ Aufklappen' : '- Zuklappen'}
+                                  </button>
+                                )}
+                                <button
+                                  onClick={() => addSubActivity(landscape.id, sid.id, activity.id)}
+                                  className="flex items-center gap-1 text-xs px-2 py-0.5 bg-purple-100 text-purple-700 border border-purple-300 rounded hover:bg-purple-200"
+                                >
+                                  <PlusIcon /> Sub-Aktivität
+                                </button>
+                              </div>
+                            )}
+
+                            {/* Sub-Activities List */}
+                            {activity.type === 'update' && !collapsedActivities.has(activity.id) && (activity.subActivities || []).map(subActivity => (
+                              <div key={subActivity.id} className="ml-6 mt-2 p-2 bg-white border-l-2 rounded" style={{ borderColor: actType?.color }}>
+                                <div className="flex flex-wrap gap-2 items-center">
+                                  <div
+                                    className="w-2 h-2 rounded-full opacity-60"
+                                    style={{ backgroundColor: actType?.color }}
+                                  />
+                                  <input
+                                    type="text"
+                                    value={subActivity.name}
+                                    onChange={(e) => updateSubActivity(landscape.id, sid.id, activity.id, subActivity.id, 'name', e.target.value)}
+                                    disabled={!canEdit}
+                                    className={`px-2 py-1 border border-gray-300 rounded text-sm w-32 ${!canEdit ? 'bg-gray-100' : ''}`}
+                                    placeholder="Name"
+                                  />
+                                  <div className="flex items-center gap-1">
+                                    <span className="text-xs text-gray-500">Start:</span>
+                                    <input
+                                      type="date"
+                                      value={subActivity.startDate}
+                                      onChange={(e) => updateSubActivity(landscape.id, sid.id, activity.id, subActivity.id, 'startDate', e.target.value)}
+                                      disabled={!canEdit}
+                                      className={`px-1 py-0.5 border border-gray-300 rounded text-xs ${!canEdit ? 'bg-gray-100' : ''}`}
+                                    />
+                                  </div>
+                                  <div className="flex items-center gap-1">
+                                    <span className="text-xs text-gray-500">Dauer:</span>
+                                    <input
+                                      type="number"
+                                      value={subActivity.duration}
+                                      onChange={(e) => updateSubActivity(landscape.id, sid.id, activity.id, subActivity.id, 'duration', e.target.value)}
+                                      min="1"
+                                      disabled={!canEdit}
+                                      className={`px-1 py-0.5 border border-gray-300 rounded w-12 text-xs ${!canEdit ? 'bg-gray-100' : ''}`}
+                                    />
+                                    <span className="text-xs text-gray-500">AT</span>
+                                  </div>
+                                  <div className="text-xs text-gray-500">
+                                    Ende: <span className="font-medium">{formatDateDE(subActivity.endDate)}</span>
+                                  </div>
+                                  <label className="flex items-center gap-1 text-xs ml-2">
+                                    <input
+                                      type="checkbox"
+                                      checked={subActivity.includesWeekend || false}
+                                      onChange={(e) => updateSubActivity(landscape.id, sid.id, activity.id, subActivity.id, 'includesWeekend', e.target.checked)}
+                                      disabled={!canEdit}
+                                      className="w-3 h-3"
+                                    />
+                                    <span>WE</span>
+                                  </label>
+                                  {canEdit && (
+                                    <button
+                                      onClick={() => deleteSubActivity(landscape.id, sid.id, activity.id, subActivity.id)}
+                                      className="ml-auto flex items-center justify-center w-8 h-8 bg-red-100 text-red-600 rounded hover:bg-red-200"
+                                      title="Sub-Aktivität löschen"
+                                    >
+                                      <TrashIcon />
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+
+            {/* Footer */}
+            <div className="text-center text-gray-500 text-sm mt-6">
+              SAP Basis Jahresplaner • 2026 • Optima Solutions GmbH • Daten werden in SQLite-Datenbank gespeichert
+            </div>
+          </div>
+
+
+          {/* SID Info Edit Modal */}
+          {editingSidInfo && (
+            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+              <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-2xl mx-4">
+                <div className="flex justify-between items-center mb-4">
+                  <h2 className="text-xl font-bold">SID Informationen bearbeiten</h2>
+                  <button
+                    onClick={() => setEditingSidInfo(null)}
+                    className="text-gray-500 hover:text-gray-700 text-2xl"
+                  >
+                    &times;
+                  </button>
+                </div>
+
+                <div className="mb-4">
+                  <label className="block text-gray-700 font-medium mb-2">Notizen & Infos (max. 5000 Zeichen)</label>
+                  <textarea
+                    value={editingSidInfo.notes}
+                    onChange={(e) => setEditingSidInfo({ ...editingSidInfo, notes: e.target.value })}
+                    className="w-full h-64 p-3 border border-gray-300 rounded focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                    placeholder="Hier wichtige Informationen zum System eintragen..."
+                    maxLength={5000}
+                  />
+                  <div className="text-right text-xs text-gray-500 mt-1">
+                    {editingSidInfo.notes.length} / 5000 Zeichen
+                  </div>
+                </div>
+
+                <div className="flex justify-end gap-3">
+                  <button
+                    onClick={() => setEditingSidInfo(null)}
+                    className="px-4 py-2 border border-gray-300 rounded hover:bg-gray-50"
+                  >
+                    Abbrechen
+                  </button>
+                  <button
+                    onClick={() => {
+                      updateSID(editingSidInfo.landscapeId, editingSidInfo.sidId, 'notes', editingSidInfo.notes);
+                      setEditingSidInfo(null);
+                    }}
+                    className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+                  >
+                    Speichern
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Password Change Modal */}
+          {showPasswordDialog && (
+            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+              <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-md mx-4">
+                <div className="flex justify-between items-center mb-4">
+                  <h2 className="text-xl font-bold">Passwort ändern</h2>
+                  <button
+                    onClick={() => { setShowPasswordDialog(false); setPasswordError(''); setPasswordSuccess(''); }}
+                    className="text-gray-500 hover:text-gray-700 text-2xl"
+                  >
+                    ×
+                  </button>
+                </div>
+
+                <form onSubmit={handlePasswordChange}>
+                  <div className="mb-4">
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Aktuelles Passwort</label>
+                    <input
+                      type="password"
+                      name="currentPassword"
+                      required
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+
+                  <div className="mb-4">
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Neues Passwort</label>
+                    <input
+                      type="password"
+                      name="newPassword"
+                      required
+                      minLength="6"
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+
+                  <div className="mb-4">
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Neues Passwort bestätigen</label>
+                    <input
+                      type="password"
+                      name="confirmPassword"
+                      required
+                      minLength="6"
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+
+                  {passwordError && (
+                    <div className="mb-4 p-3 bg-red-100 text-red-700 rounded-lg text-sm">
+                      {passwordError}
+                    </div>
+                  )}
+
+                  {passwordSuccess && (
+                    <div className="mb-4 p-3 bg-green-100 text-green-700 rounded-lg text-sm">
+                      {passwordSuccess}
+                    </div>
+                  )}
+
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => { setShowPasswordDialog(false); setPasswordError(''); setPasswordSuccess(''); }}
+                      className="flex-1 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"
+                    >
+                      Abbrechen
+                    </button>
+                    <button
+                      type="submit"
+                      className="flex-1 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                    >
+                      Speichern
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
+
+          {/* User Management Modal */}
+          {showUserDialog && (
+            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+              <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-2xl mx-4 max-h-[90vh] overflow-y-auto">
+                <div className="flex justify-between items-center mb-4">
+                  <h2 className="text-xl font-bold">👥 Benutzerverwaltung</h2>
+                  <button
+                    onClick={() => setShowUserDialog(false)}
+                    className="text-gray-500 hover:text-gray-700 text-2xl"
+                  >
+                    ×
+                  </button>
+                </div>
+
+                {userError && (
+                  <div className="mb-4 p-3 bg-red-100 text-red-700 rounded-lg text-sm">
+                    {userError}
+                  </div>
+                )}
+
+                {/* User List */}
+                <div className="mb-6">
+                  <h3 className="font-semibold mb-2">Vorhandene Benutzer:</h3>
+                  <div className="border rounded-lg divide-y">
+                    {users.map(u => (
+                      <div key={u.id} className="flex items-center justify-between p-3 hover:bg-gray-50">
+                        <div className="flex items-center gap-3">
+                          <span className="font-medium">{u.username}</span>
+                          <span className={`text-xs px-2 py-0.5 rounded ${u.role === 'admin' ? 'bg-purple-100 text-purple-700' : 'bg-gray-100 text-gray-600'}`}>
+                            {u.role === 'admin' ? 'Administrator' : 'Benutzer'}
+                          </span>
+                        </div>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => handleResetPassword(u.id)}
+                            className="text-sm px-2 py-1 text-blue-600 hover:text-blue-800 border border-blue-300 rounded"
+                          >
+                            🔑 PW Reset
+                          </button>
+                          {u.id !== user.id && (
+                            <button
+                              onClick={() => handleDeleteUser(u.id, u.username)}
+                              className="text-sm px-2 py-1 text-red-600 hover:text-red-800 border border-red-300 rounded"
+                            >
+                              🗑️ Löschen
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Add New User Form */}
+                <div className="border-t pt-4">
+                  <h3 className="font-semibold mb-2">Neuen Benutzer anlegen:</h3>
+                  <form onSubmit={handleAddUser} className="flex flex-wrap gap-2 items-end">
+                    <div className="flex-1 min-w-32">
+                      <label className="block text-xs text-gray-600 mb-1">Benutzername</label>
+                      <input
+                        type="text"
+                        name="newUsername"
+                        required
+                        placeholder="username"
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                      />
+                    </div>
+                    <div className="flex-1 min-w-32">
+                      <label className="block text-xs text-gray-600 mb-1">Passwort</label>
+                      <input
+                        type="password"
+                        name="newPassword"
+                        required
+                        minLength="6"
+                        placeholder="••••••"
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                      />
+                    </div>
+                    <div className="w-36">
+                      <label className="block text-xs text-gray-600 mb-1">Rolle</label>
+                      <select name="newRole" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm">
+                        <option value="user">Benutzer (Lesen)</option>
+                        <option value="admin">Administrator</option>
+                      </select>
+                    </div>
+                    <button
+                      type="submit"
+                      className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm"
+                    >
+                      + Anlegen
+                    </button>
+                  </form>
+                </div>
+
+                <div className="mt-6 text-right">
+                  <button
+                    onClick={() => setShowUserDialog(false)}
+                    className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"
+                  >
+                    Schließen
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Logs Modal */}
+          {showLogsDialog && (
+            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+              <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-4xl mx-4 max-h-[90vh] overflow-y-auto">
+                <div className="flex justify-between items-center mb-4">
+                  <h2 className="text-xl font-bold">📋 Logfiles</h2>
+                  <button
+                    onClick={() => setShowLogsDialog(false)}
+                    className="text-gray-500 hover:text-gray-700 text-2xl"
+                  >
+                    ×
+                  </button>
+                </div>
+
+                {logsLoading ? (
+                  <div className="text-center py-8 text-gray-500">Lade Logs...</div>
+                ) : !logs ? (
+                  <div className="text-center py-8 text-gray-500">Keine Logs vorhanden</div>
+                ) : (
+                  <div className="bg-gray-100 p-4 rounded-lg overflow-x-auto">
+                    <pre className="font-mono text-xs whitespace-pre-wrap max-h-[60vh] overflow-y-auto">
+                      {logs}
+                    </pre>
+                  </div>
+                )}
+
+                <div className="mt-6 text-right">
+                  <button
+                    onClick={() => setShowLogsDialog(false)}
+                    className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"
+                  >
+                    Schließen
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Maintenance Sundays Modal */}
+          {showMaintenanceDialog && (
+            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+              <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-md mx-4">
+                <div className="flex justify-between items-center mb-4">
+                  <h2 className="text-xl font-bold">🔧 Wartungssonntage</h2>
+                  <button
+                    onClick={() => setShowMaintenanceDialog(false)}
+                    className="text-gray-500 hover:text-gray-700 text-2xl"
+                  >
+                    ×
+                  </button>
+                </div>
+
+                <p className="text-sm text-gray-600 mb-4">
+                  Wartungssonntage werden im Gantt-Diagramm lila markiert und wie Feiertage behandelt.
+                </p>
+
+                {maintenanceLoading ? (
+                  <div className="text-center py-8 text-gray-500">Laden...</div>
+                ) : (
+                  <div className="space-y-3">
+                    {[1, 2, 3, 4].map(id => {
+                      const sunday = maintenanceSundays.find(s => s.id === id);
+                      return (
+                        <div key={id} className="flex items-center gap-3">
+                          <label className="w-32 font-medium text-purple-700">
+                            Wartungssonntag {['I', 'II', 'III', 'IV'][id - 1]}
+                          </label>
+                          <input
+                            type="date"
+                            value={sunday?.date || ''}
+                            onChange={(e) => handleMaintenanceSundayUpdate(id, e.target.value)}
+                            className="flex-1 px-3 py-2 border border-gray-300 rounded-lg"
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                <div className="mt-6 text-right">
+                  <button
+                    onClick={() => setShowMaintenanceDialog(false)}
+                    className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700"
+                  >
+                    Fertig
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    };
+
+    ReactDOM.render(<SAPBasisPlanner />, document.getElementById('root'));
+  </script>
+</body>
+
+</html>

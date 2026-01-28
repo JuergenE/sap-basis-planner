@@ -1,0 +1,27 @@
+{
+    "name": "sap-basis-planner",
+    "version": "1.0.0",
+    "description": "SAP Basis Jahresplaner mit SQLite-Backend und Multi-User-Support",
+    "main": "server.js",
+    "scripts": {
+        "start": "node server.js",
+        "dev": "node --watch server.js"
+    },
+    "keywords": [
+        "sap",
+        "planner",
+        "sqlite"
+    ],
+    "author": "Optima Solutions GmbH",
+    "license": "UNLICENSED",
+    "dependencies": {
+        "bcrypt": "^5.1.1",
+        "better-sqlite3": "^11.0.0",
+        "cookie-parser": "^1.4.7",
+        "cors": "^2.8.5",
+        "express": "^4.18.2",
+        "express-rate-limit": "^8.2.1",
+        "helmet": "^8.1.0",
+        "uuid": "^9.0.1"
+    }
+}
