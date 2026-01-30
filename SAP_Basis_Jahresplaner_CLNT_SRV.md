@@ -38,7 +38,7 @@ This guide explains how to deploy the SAP Basis Jahresplaner in a client/server 
 ### Prerequisites
 
 - **Operating System:** Windows Server, Linux, or macOS
-- **Node.js:** Version 18 or higher
+- **Node.js:** Version 24 or higher (LTS)
 - **Network:** Server must be accessible from client machines (check firewall)
 
 ### Step 1: Prepare Server Directory

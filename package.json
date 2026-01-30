@@ -3,6 +3,9 @@
     "version": "1.0.0",
     "description": "SAP Basis Jahresplaner mit SQLite-Backend und Multi-User-Support",
     "main": "server.js",
+    "engines": {
+        "node": ">=24.0.0"
+    },
     "scripts": {
         "start": "node server.js",
         "dev": "node --watch server.js"
@@ -15,7 +18,7 @@
     "author": "Optima Solutions GmbH",
     "license": "UNLICENSED",
     "dependencies": {
-        "bcrypt": "^5.1.1",
+        "bcryptjs": "^2.4.3",
         "better-sqlite3": "^11.0.0",
         "cookie-parser": "^1.4.7",
         "cors": "^2.8.5",

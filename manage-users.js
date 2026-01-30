@@ -9,7 +9,7 @@
  * Rollen: admin (Schreibzugriff), user (nur Lesezugriff)
  */
 
-const bcrypt = require('bcrypt');
+const bcrypt = require('bcryptjs');
 const Database = require('better-sqlite3');
 const path = require('path');
 

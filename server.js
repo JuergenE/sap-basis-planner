@@ -6,9 +6,10 @@
  */
 
 const express = require('express');
+const https = require('https');
 
 const Database = require('better-sqlite3');
-const bcrypt = require('bcrypt');
+const bcrypt = require('bcryptjs');
 const { v4: uuidv4 } = require('uuid');
 const cors = require('cors');
 const path = require('path');
@@ -1019,20 +1020,61 @@ app.get('/', (req, res) => {
 // START SERVER
 // =========================================================================
 
-app.listen(PORT, () => {
-  console.log(`
+const startServer = () => {
+  const keyPath = path.join(__dirname, 'server.key');
+  const certPath = path.join(__dirname, 'server.cert');
+
+  if (fs.existsSync(keyPath) && fs.existsSync(certPath)) {
+    // Start HTTPS Server
+    try {
+      const httpsOptions = {
+        key: fs.readFileSync(keyPath),
+        cert: fs.readFileSync(certPath)
+      };
+
+      https.createServer(httpsOptions, app).listen(PORT, () => {
+        console.log(`
 ╔═══════════════════════════════════════════════════════════════╗
 ║                                                               ║
-║   SAP Basis Jahresplaner Server                              ║
+║   SAP Basis Jahresplaner Server (HTTPS)                       ║
+║                                                               ║
+║   Server läuft auf: https://localhost:${PORT}                  ║
+║   Datenbank: ${path.basename(dbPath)}                                   ║
+║                                                               ║
+║   Standard-Login: admin / buek45$d4R                          ║
+║                                                               ║
+╚═══════════════════════════════════════════════════════════════╝
+        `);
+      });
+    } catch (error) {
+      console.error('Failed to start HTTPS server:', error);
+      console.log('Falling back to HTTP...');
+      startHttp();
+    }
+  } else {
+    // Start HTTP Server (Fallback)
+    startHttp();
+  }
+};
+
+const startHttp = () => {
+  app.listen(PORT, () => {
+    console.log(`
+╔═══════════════════════════════════════════════════════════════╗
+║                                                               ║
+║   SAP Basis Jahresplaner Server (HTTP)                        ║
 ║                                                               ║
 ║   Server läuft auf: http://localhost:${PORT}                   ║
 ║   Datenbank: ${path.basename(dbPath)}                                   ║
 ║                                                               ║
-║   Standard-Login: admin / buek45$$d4R                         ║
+║   Standard-Login: admin / buek45$d4R                          ║
 ║                                                               ║
 ╚═══════════════════════════════════════════════════════════════╝
-  `);
-});
+    `);
+  });
+};
+
+startServer();
 
 // Graceful shutdown
 process.on('SIGINT', () => {

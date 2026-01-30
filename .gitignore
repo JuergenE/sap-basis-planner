@@ -6,6 +6,8 @@ npm-debug.log
 sap-planner.db
 *.db
 *.sqlite
+*-shm
+*-wal
 
 # Logs
 logs/
