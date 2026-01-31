@@ -121,6 +121,7 @@ const initDatabase = () => {
       landscape_id INTEGER REFERENCES landscapes(id) ON DELETE CASCADE,
       name TEXT NOT NULL,
       is_prd BOOLEAN DEFAULT FALSE,
+      visible_in_gantt BOOLEAN DEFAULT TRUE,
       notes TEXT DEFAULT '',
       sort_order INTEGER DEFAULT 0
     );
@@ -224,6 +225,14 @@ const initDatabase = () => {
   try {
     db.exec(`ALTER TABLE sids ADD COLUMN notes TEXT DEFAULT ''`);
     console.log('✓ Added notes column to sids table');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+
+  // Migration: Add visible_in_gantt column to sids table if not exists
+  try {
+    db.exec(`ALTER TABLE sids ADD COLUMN visible_in_gantt BOOLEAN DEFAULT 1`);
+    console.log('✓ Added visible_in_gantt column to sids table');
   } catch (e) {
     // Column already exists, ignore
   }
@@ -507,6 +516,7 @@ app.get('/api/landscapes', authenticate, (req, res) => {
       return {
         ...sid,
         isPRD: !!sid.is_prd,
+        visibleInGantt: sid.visible_in_gantt !== 0, // SQLite boolean is 0/1
         activities: activities.map(a => {
           // Get sub-activities for this activity
           const subActivities = db.prepare('SELECT * FROM sub_activities WHERE activity_id = ? ORDER BY sort_order').all(a.id);
@@ -574,7 +584,7 @@ app.delete('/api/landscapes/:id', authenticate, requireAdmin, (req, res) => {
 // =========================================================================
 
 app.post('/api/sids', authenticate, requireAdmin, (req, res) => {
-  const { landscape_id, name, is_prd } = req.body;
+  const { landscape_id, name, is_prd, visible_in_gantt } = req.body;
 
   if (!landscape_id) {
     return res.status(400).json({ error: 'landscape_id erforderlich' });
@@ -583,10 +593,11 @@ app.post('/api/sids', authenticate, requireAdmin, (req, res) => {
   const maxOrder = db.prepare('SELECT MAX(sort_order) as max FROM sids WHERE landscape_id = ?').get(landscape_id);
   const sortOrder = (maxOrder?.max || 0) + 1;
 
-  const result = db.prepare('INSERT INTO sids (landscape_id, name, is_prd, sort_order) VALUES (?, ?, ?, ?)').run(
+  const result = db.prepare('INSERT INTO sids (landscape_id, name, is_prd, visible_in_gantt, sort_order) VALUES (?, ?, ?, ?, ?)').run(
     landscape_id,
     name || '',
     is_prd ? 1 : 0,
+    visible_in_gantt !== false ? 1 : 0, // Default to true
     sortOrder
   );
 
@@ -595,6 +606,7 @@ app.post('/api/sids', authenticate, requireAdmin, (req, res) => {
     landscape_id,
     name: name || '',
     isPRD: !!is_prd,
+    visibleInGantt: visible_in_gantt !== false,
     sort_order: sortOrder,
     activities: []
   });
@@ -602,7 +614,7 @@ app.post('/api/sids', authenticate, requireAdmin, (req, res) => {
 
 app.put('/api/sids/:id', authenticate, requireAdmin, (req, res) => {
   const { id } = req.params;
-  const { name, is_prd, notes } = req.body;
+  const { name, is_prd, visible_in_gantt, notes } = req.body;
 
   const updates = [];
   const values = [];
@@ -614,6 +626,10 @@ app.put('/api/sids/:id', authenticate, requireAdmin, (req, res) => {
   if (is_prd !== undefined) {
     updates.push('is_prd = ?');
     values.push(is_prd ? 1 : 0);
+  }
+  if (visible_in_gantt !== undefined) {
+    updates.push('visible_in_gantt = ?');
+    values.push(visible_in_gantt ? 1 : 0);
   }
   if (notes !== undefined) {
     updates.push('notes = ?');

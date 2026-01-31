@@ -163,7 +163,7 @@
       async deleteLandscape(id) { return this.request(`/api/landscapes/${id}`, { method: 'DELETE' }); }
 
       // SIDs
-      async createSid(landscape_id, name, is_prd) { return this.request('/api/sids', { method: 'POST', body: JSON.stringify({ landscape_id, name, is_prd }) }); }
+      async createSid(landscape_id, name, is_prd, visible_in_gantt) { return this.request('/api/sids', { method: 'POST', body: JSON.stringify({ landscape_id, name, is_prd, visible_in_gantt }) }); }
       async updateSid(id, data) { return this.request(`/api/sids/${id}`, { method: 'PUT', body: JSON.stringify(data) }); }
       async deleteSid(id) { return this.request(`/api/sids/${id}`, { method: 'DELETE' }); }
 
@@ -1017,7 +1017,8 @@
 
       const updateSID = async (landscapeId, sidId, field, value) => {
         if (!canEdit) return;
-        const apiField = field === 'isPRD' ? 'is_prd' : field;
+        const apiFieldMap = { 'isPRD': 'is_prd', 'visibleInGantt': 'visible_in_gantt' };
+        const apiField = apiFieldMap[field] || field;
         try {
           await api.updateSid(sidId, { [apiField]: value });
           setLandscapes(landscapes.map(l =>
@@ -1627,7 +1628,7 @@
                   <div className="font-semibold text-lg mb-1 text-blue-700 px-2">
                     {landscape.name}
                   </div>
-                  {landscape.sids.map(sid => (
+                  {landscape.sids.filter(sid => sid.visibleInGantt !== false).map(sid => (
                     <div key={sid.id} className="flex items-stretch hover:bg-gray-50">
                       <div className="gantt-row-label min-w-48 pl-4 text-sm flex items-center gap-1 py-1 border-b border-gray-100">
                         <span className={sid.isPRD ? 'font-bold text-red-600' : ''}>
@@ -2164,6 +2165,16 @@
                             className="w-4 h-4"
                           />
                           <span className={sid.isPRD ? 'text-red-600 font-bold' : ''}>PRD System</span>
+                        </label>
+                        <label className="flex items-center gap-2 text-sm ml-4 border-l pl-4 border-gray-300">
+                          <input
+                            type="checkbox"
+                            checked={sid.visibleInGantt !== false} // Default to true if undefined
+                            onChange={(e) => updateSID(landscape.id, sid.id, 'visibleInGantt', e.target.checked)}
+                            disabled={!canEdit}
+                            className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                          />
+                          <span>Sichtbar in Gantt</span>
                         </label>
                         {canEdit && (
                           <>
