@@ -159,7 +159,7 @@
       // Landscapes
       async getLandscapes() { return this.request('/api/landscapes'); }
       async createLandscape(name) { return this.request('/api/landscapes', { method: 'POST', body: JSON.stringify({ name }) }); }
-      async updateLandscape(id, name) { return this.request(`/api/landscapes/${id}`, { method: 'PUT', body: JSON.stringify({ name }) }); }
+      async updateLandscape(id, data) { return this.request(`/api/landscapes/${id}`, { method: 'PUT', body: JSON.stringify(data) }); }
       async deleteLandscape(id) { return this.request(`/api/landscapes/${id}`, { method: 'DELETE' }); }
 
       // SIDs
@@ -979,11 +979,23 @@
         }
       };
 
-      const updateLandscapeName = async (landscapeId, name) => {
+      const updateLandscape = async (landscapeId, field, value) => {
         if (!canEdit) return;
         try {
-          await api.updateLandscape(landscapeId, name);
-          setLandscapes(landscapes.map(l => l.id === landscapeId ? { ...l, name } : l));
+          const payload = { [field]: value };
+          if (field === 'sort_order') {
+            payload.sort_order = parseInt(value) || 0;
+          }
+          await api.updateLandscape(landscapeId, payload);
+
+          setLandscapes(prev => {
+            const updated = prev.map(l => l.id === landscapeId ? { ...l, [field]: value } : l);
+            // Sort if sort_order changed
+            if (field === 'sort_order') {
+              return [...updated].sort((a, b) => (parseInt(a.sort_order) || 0) - (parseInt(b.sort_order) || 0));
+            }
+            return updated;
+          });
         } catch (error) {
           alert('Fehler: ' + error.message);
         }
@@ -1359,12 +1371,12 @@
           rangeStart = yearStart;
           rangeEnd = yearEnd;
         } else if (viewMode === 'week') {
-          // Week view: 360 days total, starting 60 days before today
+          // Week view: 420 days total, starting 60 days before today
           const todayDate = new Date();
           rangeStart = new Date(todayDate);
           rangeStart.setDate(rangeStart.getDate() - 60);
           rangeEnd = new Date(rangeStart);
-          rangeEnd.setDate(rangeEnd.getDate() + 359); // 360 days total
+          rangeEnd.setDate(rangeEnd.getDate() + 419); // 420 days total
           // Calculate offset to show today at the left
           todayOffset = 60; // Today is 60 days from the start
         } else {
@@ -1383,7 +1395,7 @@
 
         // Apply offset for navigation (slider/buttons)
         // For week/quarter view: show a window of days that slides across the range
-        const daysToShow = 60; // Number of days visible at once
+        const daysToShow = 65; // Number of days visible at once
         const maxOffset = Math.max(0, allDays.length - daysToShow);
         const effectiveOffset = Math.min(viewOffset, maxOffset);
         const visibleCount = viewMode === 'year' ? allDays.length : Math.min(daysToShow, allDays.length - effectiveOffset);
@@ -1456,7 +1468,7 @@
               width: dayWidth,
               startDay: idx,
               isNewWeek: isNewWeek,
-              monthName: date.toLocaleDateString('de-DE', { month: 'long' }) // Add month name
+              monthName: date.toLocaleDateString('de-DE', { month: 'long', year: 'numeric' }) // Add month name with year
             });
 
             currentWeek = weekNum;
@@ -1531,7 +1543,51 @@
                   {viewMode === 'week' ? (
                     // Week view: three rows - KW on top, weekday letters middle, day numbers bottom
                     <div className="flex flex-col w-full">
-                      {/* Row 1: Week numbers (KW) */}
+                      {/* Row 1: Month Names (Dedicated Row) */}
+                      <div className="flex w-full border-b border-gray-200">
+                        {(() => {
+                          const monthGroups = [];
+                          let currentMonthStr = null;
+                          let monthStartIdx = 0;
+
+                          // Group days by Month
+                          headerCells.forEach((cell, idx) => {
+                            // headerCells are days in 'week' view mode
+                            // We can use the monthName we already pre-calculated in cell
+                            if (cell.monthName !== currentMonthStr) {
+                              if (currentMonthStr !== null) {
+                                monthGroups.push({
+                                  monthName: currentMonthStr,
+                                  count: idx - monthStartIdx
+                                });
+                              }
+                              currentMonthStr = cell.monthName;
+                              monthStartIdx = idx;
+                            }
+                          });
+                          // Push last group
+                          if (currentMonthStr !== null) {
+                            monthGroups.push({
+                              monthName: currentMonthStr,
+                              count: headerCells.length - monthStartIdx
+                            });
+                          }
+
+                          return monthGroups.map((mg, idx) => (
+                            <div
+                              key={idx}
+                              className="relative h-6 bg-white border-l border-gray-300"
+                              style={{ flex: mg.count, minWidth: `${mg.count * 20}px` }}
+                            >
+                              <span className="absolute left-0 top-0 pl-1 font-bold text-gray-800 text-xs whitespace-nowrap bg-white pr-2 z-10">
+                                {mg.monthName}
+                              </span>
+                            </div>
+                          ));
+                        })()}
+                      </div>
+
+                      {/* Row 2: Week numbers (KW) */}
                       <div className="flex w-full">
                         {(() => {
                           // Group days by week number
@@ -1543,8 +1599,7 @@
                               if (currentWeekNum !== null) {
                                 weekGroups.push({
                                   weekNum: currentWeekNum,
-                                  count: idx - weekStartIdx,
-                                  monthName: headerCells[weekStartIdx].monthName
+                                  count: idx - weekStartIdx
                                 });
                               }
                               currentWeekNum = cell.weekNum;
@@ -1554,28 +1609,16 @@
                           if (currentWeekNum !== null) {
                             weekGroups.push({
                               weekNum: currentWeekNum,
-                              count: headerCells.length - weekStartIdx,
-                              monthName: headerCells[weekStartIdx].monthName // Capture month
+                              count: headerCells.length - weekStartIdx
                             });
                           }
                           return weekGroups.map((wg, idx) => {
-                            // Check if month changes (or is first)
-                            const prevWg = idx > 0 ? weekGroups[idx - 1] : null;
-                            const showMonth = idx === 0 || wg.monthName !== prevWg?.monthName;
-
                             return (
                               <div
                                 key={idx}
                                 className="text-center text-[10px] text-blue-600 font-medium border-l border-blue-400 relative"
                                 style={{ flex: wg.count, minWidth: `${wg.count * 20}px` }}
                               >
-                                {showMonth && (
-                                  <div className="absolute left-0 bottom-full mb-0.5 whitespace-nowrap z-10">
-                                    <span className="border-l-2 border-red-500 pl-1 font-bold text-gray-800 text-xs">
-                                      {wg.monthName}
-                                    </span>
-                                  </div>
-                                )}
                                 KW{wg.weekNum}
                               </div>
                             );
@@ -1612,7 +1655,7 @@
                     headerCells.map((cell, idx) => (
                       <div
                         key={idx}
-                        className="text-center text-sm font-medium border-l border-gray-200 px-1 py-2"
+                        className="text-center text-sm font-medium border-l border-gray-200 px-1 py-2 whitespace-nowrap overflow-hidden text-ellipsis"
                         style={{ width: `${cell.width}%` }}
                       >
                         {cell.label}
@@ -2111,13 +2154,28 @@
                 <div key={landscape.id} className="mb-6 border border-gray-200 rounded-lg p-4">
                   <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
                     <div className="flex items-center gap-3">
+                      {/* Sort Order Input */}
+                      <div className="relative">
+                        <input
+                          type="text"
+                          value={landscape.sort_order || 0}
+                          disabled={!canEdit}
+                          maxLength={2}
+                          onChange={(e) => {
+                            const val = e.target.value.replace(/[^0-9]/g, '');
+                            updateLandscape(landscape.id, 'sort_order', val);
+                          }}
+                          className={`w-8 h-8 text-center font-bold text-white rounded focus:ring-2 focus:ring-offset-1 focus:ring-blue-500 bg-blue-600 ${!canEdit ? 'cursor-default' : 'cursor-text'}`}
+                        />
+                      </div>
+
                       <input
                         type="text"
                         value={landscape.name}
-                        onChange={(e) => updateLandscapeName(landscape.id, e.target.value)}
+                        onChange={(e) => updateLandscape(landscape.id, 'name', e.target.value)}
                         disabled={!canEdit}
                         maxLength={35}
-                        className={`text-lg font-semibold px-2 py-1 border-b-2 border-blue-600 bg-transparent ${!canEdit ? 'cursor-default' : ''}`}
+                        className={`text-lg font-bold px-2 py-1 border-b-2 border-blue-600 bg-transparent text-blue-700 ${!canEdit ? 'cursor-default' : ''}`}
                       />
                       <button
                         onClick={() => toggleLandscapeCollapse(landscape.id)}
@@ -2152,7 +2210,13 @@
                           type="text"
                           value={sid.name}
                           placeholder="SID Name"
-                          onChange={(e) => updateSID(landscape.id, sid.id, 'name', e.target.value)}
+                          onChange={(e) => {
+                            // Enforce max 10 chars, allowed chars (letters, numbers, _, -) and uppercase
+                            const val = e.target.value.toUpperCase().replace(/[^A-Z0-9_\-]/g, '').substring(0, 10);
+                            updateSID(landscape.id, sid.id, 'name', val);
+                          }}
+                          maxLength={10}
+                          title="Max. 10 Zeichen (A-Z, 0-9, _, -)"
                           disabled={!canEdit}
                           className={`px-2 py-1 border border-gray-300 rounded font-medium w-24 ${!canEdit ? 'bg-gray-100' : ''}`}
                         />

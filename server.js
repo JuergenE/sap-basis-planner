@@ -237,6 +237,14 @@ const initDatabase = () => {
     // Column already exists, ignore
   }
 
+  // Migration: Add sort_order column to landscapes table if not exists
+  try {
+    db.exec(`ALTER TABLE landscapes ADD COLUMN sort_order INTEGER DEFAULT 0`);
+    console.log('✓ Added sort_order column to landscapes table');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+
   console.log('✓ Database initialized');
 };
 
@@ -562,15 +570,33 @@ app.post('/api/landscapes', authenticate, requireAdmin, (req, res) => {
 });
 
 app.put('/api/landscapes/:id', authenticate, requireAdmin, (req, res) => {
-  const { id } = req.params;
-  const { name } = req.body;
+  try {
+    const { id } = req.params;
+    const { name, sort_order } = req.body;
 
-  if (!name) {
-    return res.status(400).json({ error: 'Name erforderlich' });
+    const updates = [];
+    const values = [];
+
+    if (name !== undefined) {
+      updates.push('name = ?');
+      values.push(name);
+    }
+    if (sort_order !== undefined) {
+      updates.push('sort_order = ?');
+      values.push(parseInt(sort_order) || 0);
+    }
+
+    if (updates.length === 0) {
+      return res.status(400).json({ error: 'Keine Änderungen angegeben' });
+    }
+
+    values.push(id);
+    db.prepare(`UPDATE landscapes SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Update landscape error:', error);
+    res.status(500).json({ error: error.message });
   }
-
-  db.prepare('UPDATE landscapes SET name = ? WHERE id = ?').run(name, id);
-  res.json({ success: true });
 });
 
 app.delete('/api/landscapes/:id', authenticate, requireAdmin, (req, res) => {
