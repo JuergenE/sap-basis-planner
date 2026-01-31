@@ -26,7 +26,7 @@ Die Anwendung wurde von einer rein lokalen `localStorage`-Lösung auf eine Clien
 │   React Frontend    │                     │   Express.js API    │
 │   (Browser)         │   JSON Responses    │   (Node.js)         │
 │                     │                     │   Port 3232         │
-20: └─────────────────────┘                     └──────────┬──────────┘
+└─────────────────────┘                     └──────────┬──────────┘
                                                        │
                                                        │ better-sqlite3
                                                        ▼
